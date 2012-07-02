@@ -178,8 +178,7 @@ std::wstring ListTemplates()
 			relativePath = boost::filesystem::wpath(dir + L"/" + file);
 						
 			auto str = relativePath.replace_extension(TEXT("")).external_file_string();
-			if(str[0] == '\\' || str[0] == '/')
-				str = std::wstring(str.begin() + 1, str.end());
+			boost::trim_if(str, boost::is_any_of("\\/"));
 
 			replyString << TEXT("\"") << str
 						<< TEXT("\" ") << sizeWStr
