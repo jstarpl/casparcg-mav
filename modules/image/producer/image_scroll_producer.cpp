@@ -23,6 +23,8 @@
 #include "image_scroll_producer.h"
 
 #include "../util/image_loader.h"
+#include "../util/image_view.h"
+#include "../util/image_algorithms.h"
 
 #include <core/video_format.h>
 
@@ -35,21 +37,24 @@
 #include <common/log/log.h>
 #include <common/memory/memclr.h>
 #include <common/exception/exceptions.h>
+#include <common/utility/tweener.h>
 
 #include <boost/assign.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/foreach.hpp>
 #include <boost/lexical_cast.hpp>
 #include <boost/property_tree/ptree.hpp>
+#include <boost/gil/gil_all.hpp>
 
 #include <algorithm>
 #include <array>
 #include <boost/math/special_functions/round.hpp>
+#include <boost/scoped_array.hpp>
 
 using namespace boost::assign;
 
 namespace caspar { namespace image {
-		
+
 struct image_scroll_producer : public core::frame_producer
 {	
 	const std::wstring							filename_;
@@ -60,7 +65,8 @@ struct image_scroll_producer : public core::frame_producer
 
 	double										delta_;
 	double										speed_;
-	bool										snap_to_pixels_;
+	int											motion_blur_px_;
+	tweener_t									blur_tweener_;
 
 	int											start_offset_x_;
 	int											start_offset_y_;
@@ -72,12 +78,14 @@ struct image_scroll_producer : public core::frame_producer
 		const std::wstring& filename, 
 		double speed,
 		double duration,
-		bool snap_to_pixels = false) 
+		int motion_blur_px = 0,
+		bool premultiply_with_alpha = false) 
 		: filename_(filename)
 		, delta_(0)
 		, format_desc_(frame_factory->get_video_format_desc())
 		, speed_(speed)
-		, snap_to_pixels_(snap_to_pixels)
+		, motion_blur_px_(0)
+		, blur_tweener_(get_tweener(L"easeInQuad"))
 		, last_frame_(core::basic_frame::empty())
 	{
 		start_offset_x_ = 0;
@@ -89,10 +97,74 @@ struct image_scroll_producer : public core::frame_producer
 		width_  = FreeImage_GetWidth(bitmap.get());
 		height_ = FreeImage_GetHeight(bitmap.get());
 
+		bool vertical = width_ == format_desc_.width;
+		bool horizontal = height_ == format_desc_.height;
+
+		if (!vertical && !horizontal)
+			BOOST_THROW_EXCEPTION(
+				caspar::invalid_argument() << msg_info("Neither width nor height matched the video resolution"));
+
+		if (vertical)
+		{
+			if (duration != 0.0)
+			{
+				double total_num_pixels = format_desc_.height * 2 + height_;
+
+				speed_ = total_num_pixels / (duration * format_desc_.fps * static_cast<double>(format_desc_.field_count));
+
+				if (std::abs(speed_) > 1.0)
+					speed_ = std::ceil(speed_);
+			}
+
+			if (speed_ < 0.0)
+				start_offset_y_ = height_ + format_desc_.height;
+		}
+		else
+		{
+			if (duration != 0.0)
+			{
+				double total_num_pixels = format_desc_.width * 2 + width_;
+
+				speed_ = total_num_pixels / (duration * format_desc_.fps * static_cast<double>(format_desc_.field_count));
+
+				if (std::abs(speed_) > 1.0)
+					speed_ = std::ceil(speed_);
+			}
+
+			if (speed_ > 0.0)
+				start_offset_x_ = format_desc_.width - (width_ % format_desc_.width);
+			else
+				start_offset_x_ = format_desc_.width - (width_ % format_desc_.width) + width_ + format_desc_.width;
+		}
+
 		auto bytes = FreeImage_GetBits(bitmap.get());
 		int count = width_*height_*4;
+		image_view<bgra_pixel> original_view(bytes, width_, height_);
 
-		if(width_ == format_desc_.width)
+		if (premultiply_with_alpha)
+			premultiply(original_view);
+
+		boost::scoped_array<uint8_t> blurred_copy;
+
+		if (motion_blur_px > 0)
+		{
+			double angle = 3.14159265 / 2; // Up
+
+			if (horizontal && speed_ < 0)
+				angle *= 2; // Left
+			else if (vertical && speed > 0)
+				angle *= 3; // Down
+			else if (horizontal && speed  > 0)
+				angle = 0.0; // Right
+
+			blurred_copy.reset(new uint8_t[count]);
+			image_view<bgra_pixel> blurred_view(blurred_copy.get(), width_, height_);
+			blur(original_view, blurred_view, angle, motion_blur_px, blur_tweener_);
+			bytes = blurred_copy.get();
+			bitmap.reset();
+		}
+
+		if (vertical)
 		{
 			int n = 1;
 
@@ -122,24 +194,8 @@ struct image_scroll_producer : public core::frame_producer
 				frame->get_frame_transform().fill_translation[1] = - n++;
 			}
 
-			if (duration != 0.0)
-			{
-				double total_num_pixels = format_desc_.height * 2 + height_;
-
-				speed_ = total_num_pixels / (duration * format_desc_.fps * static_cast<double>(format_desc_.field_count));
-
-				if (std::abs(speed_) > 1.0)
-				{
-					speed_ = std::ceil(speed_);
-				}
-			}
-
-			if(speed_ < 0.0)
-			{
-				start_offset_y_ = height_ + format_desc_.height;
-			}
 		}
-		else if (height_ == format_desc_.height)
+		else if (horizontal)
 		{
 			int i = 0;
 			while(count > 0)
@@ -178,78 +234,157 @@ struct image_scroll_producer : public core::frame_producer
 				double translation = - (static_cast<double>(n) + 1.0);
 				frames_[n]->get_frame_transform().fill_translation[0] = translation;
 			}
-
-			if (duration != 0.0)
-			{
-				double total_num_pixels = format_desc_.width * 2 + width_;
-
-				speed_ = total_num_pixels / (duration * format_desc_.fps * static_cast<double>(format_desc_.field_count));
-
-				if (std::abs(speed_) > 1.0)
-				{
-					speed_ = std::ceil(speed_);
-				}
-			}
-
-			if(speed_ > 0.0)
-			{
-				start_offset_x_ = format_desc_.width - (width_ % format_desc_.width);
-			}
-			else
-			{
-				start_offset_x_ = format_desc_.width - (width_ % format_desc_.width) + width_ + format_desc_.width;
-			}
-		}
-		else
-		{
-			BOOST_THROW_EXCEPTION(
-				caspar::invalid_argument() << msg_info("Neither width nor height matched the video resolution"));
 		}
 
 		CASPAR_LOG(info) << print() << L" Initialized";
 	}
+
+	std::vector<safe_ptr<core::basic_frame>> get_visible(double motion_offset)
+	{
+		std::vector<safe_ptr<core::basic_frame>> result;
+		result.reserve(frames_.size());
+
+		if (speed_ < 0.0)
+		{
+			motion_offset = -motion_offset;
+		}
+
+		BOOST_FOREACH(auto& frame, frames_)
+		{
+			auto& fill_translation = frame->get_frame_transform().fill_translation;
+
+			if (width_ == format_desc_.width)
+			{
+				auto motion_offset_in_screens = (static_cast<double>(start_offset_y_) + motion_offset + delta_) / static_cast<double>(format_desc_.height);
+				auto vertical_offset = fill_translation[1] + motion_offset_in_screens;
+
+				if (vertical_offset < -1.0 || vertical_offset > 1.0)
+				{
+					continue;
+				}
+			}
+			else
+			{
+				auto motion_offset_in_screens = (static_cast<double>(start_offset_x_) + motion_offset + delta_) / static_cast<double>(format_desc_.width);
+				auto horizontal_offset = fill_translation[0] + motion_offset_in_screens;
+
+				if (horizontal_offset < -1.0 || horizontal_offset > 1.0)
+				{
+					continue;
+				}
+			}
+
+			result.push_back(frame);
+		}
+
+		return std::move(result);
+	}
 	
 	// frame_producer
 
-	safe_ptr<core::basic_frame> render_frame(bool allow_eof, bool advance_delta)
-	{		
+	safe_ptr<core::basic_frame> render_frame(bool allow_eof, double motion_offset)
+	{
 		if(frames_.empty())
 			return core::basic_frame::eof();
 		
-		auto result = make_safe<core::basic_frame>(frames_);
+		auto result = make_safe<core::basic_frame>(get_visible(motion_offset));
 		auto& fill_translation = result->get_frame_transform().fill_translation;
 
 		if(width_ == format_desc_.width)
 		{
-			if(static_cast<size_t>(std::abs(delta_)) >= height_ + format_desc_.height && allow_eof)
+			if(static_cast<size_t>(std::abs(delta_ + motion_offset)) >= height_ + format_desc_.height && allow_eof)
 				return core::basic_frame::eof();
 
 			fill_translation[1] = 
 				static_cast<double>(start_offset_y_) / static_cast<double>(format_desc_.height)
-				+ delta_ / static_cast<double>(format_desc_.height);
+				+ (delta_ + motion_offset) / static_cast<double>(format_desc_.height);
 		}
 		else
 		{
-			if(static_cast<size_t>(std::abs(delta_)) >= width_ + format_desc_.width && allow_eof)
+			if(static_cast<size_t>(std::abs(delta_ + motion_offset)) >= width_ + format_desc_.width && allow_eof)
 				return core::basic_frame::eof();
 
 			fill_translation[0] = 
 				static_cast<double>(start_offset_x_) / static_cast<double>(format_desc_.width)
-				+ delta_ / static_cast<double>(format_desc_.width);
+				+ (delta_ + motion_offset) / static_cast<double>(format_desc_.width);
 		}
 
-		if (snap_to_pixels_)
+		if (motion_blur_px_ > 0 && motion_offset != 0.0)
 		{
-			fill_translation[0] = boost::math::round(fill_translation[0] * static_cast<double>(format_desc_.width)) / static_cast<double>(format_desc_.width);
-		fill_translation[1] = boost::math::round(fill_translation[1] * static_cast<double>(format_desc_.height)) / static_cast<double>(format_desc_.height);
+			auto distance_from_middle = std::abs(motion_offset);
+			auto opacity = blur_tweener_(
+				distance_from_middle + 1,
+				1.0, 
+				-0.5, 
+				static_cast<double>(motion_blur_px_ + 2));
+			//auto opacity = 1.0 / static_cast<double>(motion_blur_px_);
+			//opacity = opacity == 1.0 ? 0.5 : opacity;
+			opacity = opacity / static_cast<double>(motion_blur_px_);
+			result->get_frame_transform().opacity = opacity;
+			//result->get_frame_transform().brightness = opacity;
+		}
+
+		return result;
+	}
+
+	safe_ptr<core::basic_frame> render_frame(bool allow_eof, bool advance_delta)
+	{
+		auto result = core::basic_frame::empty();
+		//++frame_count_;
+		if (motion_blur_px_ <= 0)
+		{
+			result = render_frame(allow_eof, 0.0);
+		}
+		else
+		{
+			std::vector<safe_ptr<core::basic_frame>> frame_trail;
+
+			auto sharp_middle_frame = render_frame(allow_eof, 0.0);
+
+			if (sharp_middle_frame != core::basic_frame::eof())
+			{
+				frame_trail.push_back(sharp_middle_frame);
+			}
+
+			//int start_blur = frame_count_ % motion_blur_px_;
+
+			for (int i = motion_blur_px_; i > 0; --i)
+			{
+				auto blurred_before = render_frame(allow_eof, static_cast<double>(-i));
+				auto blurred_after = render_frame(allow_eof, static_cast<double>(i));
+
+				if (blurred_before != core::basic_frame::eof())
+				{
+					frame_trail.push_back(blurred_before);
+				}
+
+				if (blurred_after != core::basic_frame::eof())
+				{
+					frame_trail.push_back(blurred_after);
+				}
+			}
+			
+			if (frame_trail.empty())
+			{
+				result = core::basic_frame::eof();
+			}
+			else
+			{
+				result = caspar::make_safe<core::basic_frame>(frame_trail);
+			}
 		}
 
 		if (advance_delta)
 		{
-			delta_ += speed_;
+			advance();
 		}
 
 		return result;
+	}
+
+	void advance()
+	{
+		delta_ += speed_;
 	}
 
 	virtual safe_ptr<core::basic_frame> receive(int) override
@@ -269,10 +404,12 @@ struct image_scroll_producer : public core::frame_producer
 			}
 			else
 			{
-				delta_ += speed_;
+				advance();
 			}
 
-			return last_frame_ = core::basic_frame::interlace(field1, field2, format_desc_.field_mode);
+			last_frame_ = field2;
+
+			return core::basic_frame::interlace(field1, field2, format_desc_.field_mode);
 		}
 	}
 
@@ -344,10 +481,22 @@ safe_ptr<core::frame_producer> create_scroll_producer(const safe_ptr<core::frame
 	if(speed == 0 && duration == 0)
 		return core::frame_producer::empty();
 
-	bool snap_to_pixels = std::find(params.begin(), params.end(), L"SNAP") != params.end();
+	int motion_blur_px = 0;
+	auto blur_it = std::find(params.begin(), params.end(), L"BLUR");
+	if (blur_it != params.end() && ++blur_it != params.end())
+	{
+		motion_blur_px = boost::lexical_cast<int>(*blur_it);
+	}
 
-	return create_producer_print_proxy(
-		make_safe<image_scroll_producer>(frame_factory, filename + L"." + *ext, -speed, -duration, snap_to_pixels));
+	bool premultiply_with_alpha = std::find(params.begin(), params.end(), L"PREMULTIPLY") != params.end();
+
+	return create_producer_print_proxy(make_safe<image_scroll_producer>(
+		frame_factory, 
+		filename + L"." + *ext, 
+		-speed, 
+		-duration, 
+		motion_blur_px, 
+		premultiply_with_alpha));
 }
 
 }}
