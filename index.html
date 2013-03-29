@@ -1,0 +1,149 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="chrome=1">
+    <title>Casparcg-mav by jstarpl</title>
+    <link rel="stylesheet" href="stylesheets/styles.css">
+    <link rel="stylesheet" href="stylesheets/pygment_trac.css">
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.7.1/jquery.min.js"></script>
+    <script src="javascripts/respond.js"></script>
+    <!--[if lt IE 9]>
+      <script src="//html5shiv.googlecode.com/svn/trunk/html5.js"></script>
+    <![endif]-->
+    <!--[if lt IE 8]>
+    <link rel="stylesheet" href="stylesheets/ie.css">
+    <![endif]-->
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+
+  </head>
+  <body>
+      <div id="header">
+        <nav>
+          <li class="fork"><a href="https://github.com/jstarpl/casparcg-mav">View On GitHub</a></li>
+          <li class="downloads"><a href="https://github.com/jstarpl/casparcg-mav/zipball/master">ZIP</a></li>
+          <li class="downloads"><a href="https://github.com/jstarpl/casparcg-mav/tarball/master">TAR</a></li>
+          <li class="title">DOWNLOADS</li>
+        </nav>
+      </div><!-- end header -->
+
+    <div class="wrapper">
+
+      <section>
+        <div id="title">
+          <h1>Casparcg-mav</h1>
+          <p>MAV/EVS replacement system based on the CasparCG open video server</p>
+          <hr>
+          <span class="credits left">Project maintained by <a href="https://github.com/jstarpl">jstarpl</a></span>
+          <span class="credits right">Hosted on GitHub Pages &mdash; Theme by <a href="http://twitter.com/#!/michigangraham">mattgraham</a></span>
+        </div>
+
+        <h1>CasparCG MAV Edition</h1>
+
+<p>CasparCG MAV Edition is a replay system based on the CasparCG open video server, using libjpeg-turbo for encoding and decoding video frames. It's essentially a module consisting of a producer and a consumer that work together to offer variable-speed replay.</p>
+
+<p>The system allows multiple input and output channels: f.g. 1-in &amp; 1-out, 3-in &amp; 1-out, 1-in &amp; 2-out, etc.</p>
+
+<h2>Configuration</h2>
+
+<p>Please follow first the ordinary CasparCG configuration guide at [<a href="http://www.casparcg.com/wiki">http://www.casparcg.com/wiki</a> CasparCG Wiki].</p>
+
+<p>The minimal configuration for the MAV edition requires at least two channels: one for ingest and another one for output. This usually means two Decklink cards (or a Decklink DUO/QUAD): one for input, and another one for output. Beyond that you can have multiple input and output channels, in various configurations. Always have only one replay buffer per ingest channel.</p>
+
+<p>In the configuration file:</p>
+
+<ul>
+<li>Configure all ingest channels as empty channels with proper system modes (f.g. PAL or 1080i50000). Leave the consumers tag empty.</li>
+<li>Configure all output channels as porper channels, like you normally would, f.g. with Decklink consumers.</li>
+<li>Start the server</li>
+<li>Play the input from your ingest decklink card on your ingest channel:
+<code>
+play 1 decklink 1
+</code>
+</li>
+<li>Add the replay consumer to your ingest channel:
+<code>
+add 1 replay test-replay
+</code>
+</li>
+</ul><p>The "test-replay" is a file-name for your replay buffer. Two files will be created in your CasparCG "media" folder: a TEST-REPLAY.MAV file and a TEST-REPLAY.IDX file. The first one is the video essence, and the second one is a manifest and index file. Should you copy your replay buffers, always copy both files.</p>
+
+<ul>
+<li>Play your replay buffer on your output channel:
+<code>
+play 2 test-replay
+</code>
+</li>
+<li>Voila! You have your own replay system.</li>
+</ul><h2>Usage</h2>
+
+<p>You can seek within your replay buffer using the CALL ACMP 2.0 command:</p>
+
+<ul>
+<li>
+<p>This will seek to the 100th frame in the replay buffer:</p>
+
+<pre><code>call 2 seek 100
+</code></pre>
+</li>
+<li>
+<p>This will seek to the 100th frame counting from the end of the replay buffer:</p>
+
+<pre><code>call 2 seek |100
+</code></pre>
+</li>
+<li>
+<p>This will move the playhead of your replay 50 frames forward:</p>
+
+<pre><code>call 2 seek +50
+</code></pre>
+</li>
+<li>
+<p>This will move the playhead of your replay 50 frames backward:</p>
+
+<pre><code>call 2 seek -50
+</code></pre>
+</li>
+</ul><p>You can also change the speed of your playback:</p>
+
+<ul>
+<li>
+<p>Will make the playback go at normal speed</p>
+
+<pre><code>call 2 speed 1
+</code></pre>
+</li>
+<li>
+<p>Will make the playback go backwards at twice the normal speed</p>
+
+<pre><code>call 2 speed -2
+</code></pre>
+</li>
+<li>
+<p>Will make the playback go at half the speed</p>
+
+<pre><code>call 2 speed 0.5
+</code></pre>
+</li>
+<li>
+<p>Will make the playback go at 3/4 of normal speed</p>
+
+<pre><code>call 2 speed 0.75
+</code></pre>
+</li>
+</ul><p>You can also use CasparCG's auto-play feature along with transitions by using the <code>LENGTH</code> param. You can combine <code>SEEK</code>, <code>LENGTH</code> and <code>SPEED</code> in the <code>PLAY/LOAD/LOADBG</code> command.</p>
+
+<ul>
+<li>This will make the playback start at 100th frame from the begining, play at 0.75x speed, and end playback after 100 frames (buffer time). Any transition (if specified using a f.g. <code>LOADBG (...) AUTO MIX 25</code>) to another clip will happen in the last 25 frames (output time)
+<code>
+play 2 test-replay seek 100 speed 0.5 length 100
+</code>
+</li>
+</ul>
+      </section>
+
+    </div>
+    <!--[if !IE]><script>fixScale(document);</script><![endif]-->
+    
+  </body>
+</html>
