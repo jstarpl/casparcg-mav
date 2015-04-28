@@ -27,33 +27,56 @@
 
 #include <core/producer/frame_producer.h>
 #include <core/consumer/frame_consumer.h>
+#include <core/producer/media_info/media_info.h>
+#include <core/producer/media_info/media_info_repository.h>
+#include <core/system_info_provider.h>
 
 #include <common/utf.h>
+
+#include <boost/property_tree/ptree.hpp>
 
 #include <FreeImage.h>
 
 namespace caspar { namespace image {
 
-void init()
+std::wstring version()
+{
+	return u16(FreeImage_GetVersion());
+}
+
+void init(core::module_dependencies dependencies)
 {
 	FreeImage_Initialise();
 	core::register_producer_factory(create_scroll_producer);
 	core::register_producer_factory(create_producer);
-	core::register_consumer_factory([](const std::vector<std::wstring>& params){return create_consumer(params);});
+	core::register_thumbnail_producer_factory(create_thumbnail_producer);
+	core::register_consumer_factory(create_consumer);
+	dependencies.media_info_repo->register_extractor([](const std::wstring& file, const std::wstring& extension, core::media_info& info)
+	{
+		if (extension == L".TGA"
+			|| extension == L".COL"
+			|| extension == L".PNG"
+			|| extension == L".JPEG"
+			|| extension == L".JPG"
+			|| extension == L".GIF"
+			|| extension == L".BMP")
+		{
+			info.clip_type = L"STILL";
+
+			return true;
+		}
+
+		return false;
+	});
+	dependencies.system_info_provider_repo->register_system_info_provider([](boost::property_tree::wptree& info)
+	{
+		info.add(L"system.freeimage", version());
+	});
 }
 
 void uninit()
 {
 	FreeImage_DeInitialise();
-	core::register_producer_factory(create_scroll_producer);
-	core::register_producer_factory(create_producer);
-	core::register_consumer_factory([](const std::vector<std::wstring>& params){return create_consumer(params);});
-}
-
-
-std::wstring version()
-{
-	return u16(FreeImage_GetVersion());
 }
 
 }}

@@ -28,8 +28,10 @@
 #include "CIICommand.h"
 
 #include <core/producer/stage.h>
+#include <core/producer/cg_proxy.h>
 
 #include <common/executor.h>
+#include <common/memory.h>
 
 #include <string>
 
@@ -38,14 +40,15 @@ namespace caspar { namespace protocol { namespace cii {
 class CIIProtocolStrategy : public IO::IProtocolStrategy
 {
 public:
-	CIIProtocolStrategy(const std::vector<spl::shared_ptr<core::video_channel>>& channels);
+	CIIProtocolStrategy(const std::vector<spl::shared_ptr<core::video_channel>>& channels, const spl::shared_ptr<core::cg_producer_registry>& cg_registry);
 
-	void Parse(const TCHAR* pData, int charCount, IO::ClientInfoPtr pClientInfo);
-	std::string GetCodepage() {return "ISO-8859-1";}	//ISO 8859-1
+	void Parse(const std::wstring& message, IO::ClientInfoPtr pClientInfo);
+	std::string GetCodepage() const { return "ISO-8859-1"; }	//ISO 8859-1
 
 	void SetProfile(const std::wstring& profile) {currentProfile_ = profile;}
 
-	spl::shared_ptr<core::video_channel> GetChannel() const{return this->pChannel_;}
+	spl::shared_ptr<core::video_channel> GetChannel() const { return pChannel_; }
+	spl::shared_ptr<core::cg_producer_registry> get_cg_registry() const { return cg_registry_; }
 
 	void DisplayMediaFile(const std::wstring& filename);
 	void DisplayTemplate(const std::wstring& titleName);
@@ -54,13 +57,15 @@ public:
 public:
 	struct TitleHolder
 	{
-		TitleHolder() : titleName(TEXT("")), pframe_producer(core::frame_producer::empty())	{}
+		TitleHolder() : titleName(L""), pframe_producer(core::frame_producer::empty())	{}
 		TitleHolder(const std::wstring& name, spl::shared_ptr<core::frame_producer> pFP) : titleName(name), pframe_producer(pFP) {}
 		TitleHolder(const TitleHolder& th) : titleName(th.titleName), pframe_producer(th.pframe_producer) {}
-		const TitleHolder& operator=(const TitleHolder& th) 
+		TitleHolder& operator=(const TitleHolder& th) 
 		{
 			titleName = th.titleName;
 			pframe_producer = th.pframe_producer;
+
+			return *this;
 		}
 		bool operator==(const TitleHolder& rhs) 
 		{
@@ -76,9 +81,9 @@ private:
 	typedef std::list<TitleHolder> TitleList;
 	TitleList titles_;
 	spl::shared_ptr<core::frame_producer> GetPreparedTemplate(const std::wstring& name);
-	void PutPreparedTemplate(const std::wstring& name, spl::shared_ptr<core::frame_producer>& pframe_producer);
+	void PutPreparedTemplate(const std::wstring& name, const spl::shared_ptr<core::frame_producer>& pframe_producer);
 
-	static const TCHAR TokenDelimiter;
+	static const wchar_t TokenDelimiter;
 	static const std::wstring MessageDelimiter;
 
 	void ProcessMessage(const std::wstring& message, IO::ClientInfoPtr pClientInfo);
@@ -90,6 +95,7 @@ private:
 
 	std::wstring currentProfile_;
 	spl::shared_ptr<core::video_channel> pChannel_;
+	spl::shared_ptr<core::cg_producer_registry> cg_registry_;
 };
 
 }}}

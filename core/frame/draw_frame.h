@@ -33,7 +33,7 @@ namespace caspar { namespace core {
 	
 struct frame_transform;
 
-class draw_frame sealed
+class draw_frame final
 {
 public:		
 	// Static Members
@@ -72,7 +72,8 @@ public:
 	// Properties
 
 	const core::frame_transform&	transform() const;
-	core::frame_transform&			transform();			
+	core::frame_transform&			transform();
+
 private:
 	struct impl;
 	spl::unique_ptr<impl> impl_;

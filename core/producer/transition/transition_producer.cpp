@@ -19,7 +19,7 @@
 * Author: Robert Nagy, ronag89@gmail.com
 */
 
-#include "../../stdafx.h"
+#include "../../StdAfx.h"
 
 #include "transition_producer.h"
 
@@ -30,31 +30,30 @@
 
 #include <tbb/parallel_invoke.h>
 
+#include <future>
+
 namespace caspar { namespace core {	
 
 class transition_producer : public frame_producer_base
 {	
-	monitor::basic_subject				event_subject_;
+	spl::shared_ptr<monitor::subject>	monitor_subject_;
 	const field_mode					mode_;
-	int									current_frame_;
+	int									current_frame_		= 0;
 	
 	const transition_info				info_;
 		
 	spl::shared_ptr<frame_producer>		dest_producer_;
-	spl::shared_ptr<frame_producer>		source_producer_;
+	spl::shared_ptr<frame_producer>		source_producer_	= frame_producer::empty();
 
-	bool								paused_;
+	bool								paused_				= false;
 		
 public:
 	explicit transition_producer(const field_mode& mode, const spl::shared_ptr<frame_producer>& dest, const transition_info& info) 
 		: mode_(mode)
-		, current_frame_(0)
 		, info_(info)
 		, dest_producer_(dest)
-		, source_producer_(frame_producer::empty())
-		, paused_(false)
 	{
-		dest->subscribe(event_subject_);
+		dest->monitor_output().attach_parent(monitor_subject_);
 
 		CASPAR_LOG(info) << print() << L" Initialized";
 	}
@@ -93,10 +92,10 @@ public:
 				source = source_producer_->last_frame();
 		});			
 						
-		event_subject_	<< monitor::event("transition/frame") % current_frame_ % info_.duration
-						<< monitor::event("transition/type") % [&]() -> std::string
+		*monitor_subject_	<< monitor::message("/transition/frame") % current_frame_ % info_.duration
+							<< monitor::message("/transition/type") % [&]() -> std::string
 																{
-																	switch(info_.type.value())
+																	switch(info_.type)
 																	{
 																	case transition_type::mix:		return "mix";
 																	case transition_type::wipe:		return "wipe";
@@ -117,7 +116,12 @@ public:
 
 		return frame_producer_base::last_frame();
 	}
-			
+
+	constraints& pixel_constraints() override
+	{
+		return dest_producer_->pixel_constraints();
+	}
+
 	uint32_t nb_frames() const override
 	{
 		return dest_producer_->nb_frames();
@@ -138,9 +142,9 @@ public:
 		return dest_producer_->info();
 	}
 	
-	boost::unique_future<std::wstring> call(const std::wstring& str) override
+	std::future<std::wstring> call(const std::vector<std::wstring>& params) override
 	{
-		return dest_producer_->call(str);
+		return dest_producer_->call(params);
 	}
 
 	// transition_producer
@@ -202,14 +206,19 @@ public:
 		return draw_frame::over(s_frame, d_frame);
 	}
 
-	void subscribe(const monitor::observable::observer_ptr& o) override															
+	monitor::subject& monitor_output()
 	{
-		event_subject_.subscribe(o);
+		return *monitor_subject_;
 	}
 
-	void unsubscribe(const monitor::observable::observer_ptr& o) override		
+	void on_interaction(const interaction_event::ptr& event) override
 	{
-		event_subject_.unsubscribe(o);
+		dest_producer_->on_interaction(event);
+	}
+
+	bool collides(double x, double y) const override
+	{
+		return dest_producer_->collides(x, y);
 	}
 };
 

@@ -1,262 +1,134 @@
+/*
+* Copyright 2013 Sveriges Television AB http://casparcg.com/
+*
+* This file is part of CasparCG (www.casparcg.com).
+*
+* CasparCG is free software: you can redistribute it and/or modify
+* it under the terms of the GNU General Public License as published by
+* the Free Software Foundation, either version 3 of the License, or
+* (at your option) any later version.
+*
+* CasparCG is distributed in the hope that it will be useful,
+* but WITHOUT ANY WARRANTY; without even the implied warranty of
+* MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+* GNU General Public License for more details.
+*
+* You should have received a copy of the GNU General Public License
+* along with CasparCG. If not, see <http://www.gnu.org/licenses/>.
+*
+* Author: Robert Nagy, ronag89@gmail.com
+*/
 #pragma once
 
-#include <common/reactive.h>
-
-#include <functional>
-#include <memory>
-#include <ostream>
-#include <string>
-#include <type_traits>
-#include <vector>
+#include <common/memory.h>
+#include <common/assert.h>
 
 #include <boost/variant.hpp>
-#include <boost/lexical_cast.hpp>
-#include <boost/chrono.hpp>
+#include <boost/chrono/duration.hpp>
 
-#include <tbb/cache_aligned_allocator.h>
+#include <cstdint>
+#include <string>
+#include <vector>
 
-namespace boost {
-namespace detail { namespace variant {
+namespace caspar { namespace core { namespace monitor {
+		
+typedef boost::variant<bool, 
+					   std::int32_t, 
+					   std::int64_t, 
+					   float, 
+					   double, 
+					   std::string,
+					   std::wstring,
+					   std::vector<std::int8_t>> data_t;
 
-template <>
-struct has_nothrow_move<std::string>
-: mpl::true_
+class message
 {
+public:
+
+	message(std::string path, std::vector<data_t> data = std::vector<data_t>())
+		: path_(std::move(path))
+		, data_ptr_(std::make_shared<std::vector<data_t>>(std::move(data)))
+	{
+		CASPAR_ASSERT(path.empty() || path[0] == '/');
+	}
+	
+	message(std::string path, spl::shared_ptr<std::vector<data_t>> data_ptr)
+		: path_(std::move(path))
+		, data_ptr_(std::move(data_ptr))
+	{
+		CASPAR_ASSERT(path.empty() || path[0] == '/');
+	}
+
+	const std::string& path() const
+	{
+		return path_;
+	}
+
+	const std::vector<data_t>& data() const
+	{
+		return *data_ptr_;
+	}
+
+	message propagate(const std::string& path) const
+	{
+		return message(path + path_, data_ptr_);
+	}
+
+	template<typename T>
+	message& operator%(T&& data)
+	{
+		data_ptr_->push_back(std::forward<T>(data));
+		return *this;
+	}
+
+private:
+	std::string								path_;
+	spl::shared_ptr<std::vector<data_t>>	data_ptr_;
 };
-  
-template <>
-struct has_nothrow_move<std::vector<int8_t>>
-: mpl::true_
+
+struct sink
 {
+	virtual ~sink() { }
+
+	virtual void propagate(const message& msg) = 0;
 };
 
-template <>
-struct has_nothrow_move<boost::chrono::duration<double, boost::ratio<1, 1>>>
-: mpl::true_
+class subject : public sink
 {
+private:
+	std::weak_ptr<sink> parent_;
+	const std::string path_;
+public:
+	subject(std::string path = "")
+		: path_(std::move(path))
+	{
+		CASPAR_ASSERT(path.empty() || path[0] == '/');
+	}
+
+	void attach_parent(spl::shared_ptr<sink> parent)
+	{
+		parent_ = std::move(parent);
+	}
+
+	void detach_parent()
+	{
+		parent_.reset();
+	}
+
+	subject& operator<<(const message& msg)
+	{
+		propagate(msg);
+
+		return *this;
+	}
+
+	virtual void propagate(const message& msg) override
+	{
+		auto parent = parent_.lock();
+
+		if (parent)
+			parent->propagate(msg.propagate(path_));
+	}
 };
 
 }}}
-
-namespace caspar { namespace monitor {
-	
-// path
-
-class path sealed
-{
-public:	
-
-	// Static Members
-
-	// Constructors
-
-	path();		
-	path(const char* path);
-	path(std::string path);
-
-	path(const path& other);	
-	path(path&& other);
-		
-	// Methods
-
-	path& operator=(path other);
-	path& operator%=(path other);
-
-	template<typename T>
-	typename std::enable_if<!std::is_same<typename std::decay<T>::type, path>::value, path&>::type operator%=(T&& value)
-	{
-		auto str = boost::lexical_cast<std::string>(std::forward<T>(value));
-
-		if(!str.empty())
-			str_ += (str.front() != '/' ? "/" : "") + std::move(str);
-
-		return *this;
-	}
-	
-	path& operator%=(const char* value)
-	{
-		return *this %= std::string(value);
-	}
-
-	void swap(path& other);
-
-	// Properties
-
-	const std::string& str() const;	
-	bool empty() const;
-private:
-	std::string str_;
-};
-
-template<typename T>
-path operator%(path path, T&& value)
-{	
-	return std::move(path %= std::forward<T>(value));
-}
-
-std::ostream& operator<<(std::ostream& o, const path& p);
-
-// param
-
-typedef boost::chrono::duration<double, boost::ratio<1, 1>> duration;
-
-typedef boost::variant<bool, int32_t, int64_t, float, double, std::string, std::wstring, std::vector<int8_t>, duration> param;
-
-std::ostream& operator<<(std::ostream& o, const param& p);
-
-// event
-
-class event sealed
-{	
-public:	
-	
-	// Static Members
-
-	typedef std::vector<param, tbb::cache_aligned_allocator<param>> params_t;
-
-	// Constructors
-
-	event(path path);	
-	event(path path, params_t params);					
-	event(const event& other);
-	event(event&& other);
-
-	// Methods
-
-	event& operator=(event other);
-
-	void swap(event& other);
-		
-	template<typename T>
-	event& operator%(T&& value)
-	{
-		params_.push_back(std::forward<T>(value));
-		return *this;
-	}
-	
-	event propagate(path path) const;
-
-	// Properties
-
-	const path&		path() const;
-	const params_t&	params() const;
-private:
-	monitor::path	path_;
-	params_t		params_;
-};
-
-std::ostream& operator<<(std::ostream& o, const event& e);
-
-// reactive
-
-typedef reactive::observable<monitor::event>	observable;
-typedef reactive::observer<monitor::event>		observer;
-typedef reactive::subject<monitor::event>		subject;
-	
-class basic_subject sealed : public reactive::subject<monitor::event>
-{	    
-	basic_subject(const basic_subject&);
-	basic_subject& operator=(const basic_subject&);
-	
-	class impl : public observer
-	{
-	public:
-		impl(monitor::path path = monitor::path())
-			: impl_()
-			, path_(std::move(path))
-		{
-		}
-
-		impl(impl&& other)
-			: impl_(std::move(other.impl_))
-			, path_(std::move(other.path_))
-		{		
-		}
-
-		impl& operator=(impl&& other)
-		{
-			impl_ = std::move(other.impl_);		
-			path_ = std::move(other.path_);
-		}
-							
-		void on_next(const monitor::event& e) override
-		{				
-			impl_.on_next(path_.empty() ? e : e.propagate(path_));
-		}
-
-		void subscribe(const observer_ptr& o)
-		{				
-			impl_.subscribe(o);
-		}
-
-		void unsubscribe(const observer_ptr& o)
-		{
-			impl_.unsubscribe(o);
-		}
-				
-	private:
-		reactive::basic_subject_impl<monitor::event>	impl_;		
-		monitor::path									path_;
-	};
-
-public:		
-
-	// Static Members
-
-	// Constructors
-
-	basic_subject(monitor::path path = monitor::path())
-		: impl_(std::make_shared<impl>(std::move(path)))
-
-	{
-	}
-		
-	basic_subject(basic_subject&& other)
-		: impl_(std::move(other.impl_))
-	{
-	}
-	
-	// Methods
-
-	basic_subject& operator=(basic_subject&& other)
-	{
-		impl_ = std::move(other.impl_);
-	}
-
-	operator std::weak_ptr<observer>()
-	{
-		return impl_;
-	}
-
-	// observable
-	
-	void subscribe(const observer_ptr& o) override
-	{				
-		impl_->subscribe(o);
-	}
-
-	void unsubscribe(const observer_ptr& o) override
-	{
-		impl_->unsubscribe(o);
-	}
-
-	// observer
-				
-	void on_next(const monitor::event& e) override
-	{				
-		impl_->on_next(e);
-	}
-
-	// Properties
-
-private:
-	std::shared_ptr<impl> impl_;
-};
-
-inline subject& operator<<(subject& s, const event& e)
-{
-	s.on_next(e);
-	return s;
-}
-
-}}

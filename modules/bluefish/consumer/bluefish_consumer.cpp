@@ -186,7 +186,7 @@ public:
 			CASPAR_LOG(error)<< print() << TEXT(" Failed to disable video output.");		
 	}
 	
-	boost::unique_future<bool> send(core::const_frame& frame)
+	std::future<bool> send(core::const_frame& frame)
 	{					
 		return executor_.begin_invoke([=]() -> bool
 		{
@@ -298,10 +298,16 @@ public:
 
 struct bluefish_consumer_proxy : public core::frame_consumer
 {
+	core::monitor::subject				monitor_subject_;
+
 	std::unique_ptr<bluefish_consumer>	consumer_;
 	const int							device_index_;
 	const bool							embedded_audio_;
 	const bool							key_only_;
+
+	std::vector<int>					audio_cadence_;
+	core::video_format_desc				format_desc_;
+
 public:
 
 	bluefish_consumer_proxy(int device_index, bool embedded_audio, bool key_only)
@@ -315,12 +321,17 @@ public:
 	
 	void initialize(const core::video_format_desc& format_desc, int channel_index) override
 	{
+		format_desc_ = format_desc;
+		audio_cadence_ = format_desc.audio_cadence;
+
 		consumer_.reset();
 		consumer_.reset(new bluefish_consumer(format_desc, device_index_, embedded_audio_, key_only_, channel_index));
 	}
 	
-	boost::unique_future<bool> send(core::const_frame frame) override
+	std::future<bool> send(core::const_frame frame) override
 	{
+		CASPAR_VERIFY(audio_cadence_.front() * format_desc_.audio_channels == static_cast<size_t>(frame.audio_data().size()));
+		boost::range::rotate(audio_cadence_, std::begin(audio_cadence_)+1);
 		return consumer_->send(frame);
 	}
 		
@@ -354,16 +365,14 @@ public:
 		return 400 + device_index_;
 	}
 
-	void subscribe(const monitor::observable::observer_ptr& o) override
+	core::monitor::subject& monitor_output()
 	{
+		return monitor_subject_;
 	}
-
-	void unsubscribe(const monitor::observable::observer_ptr& o) override
-	{
-	}	
 };	
 
-spl::shared_ptr<core::frame_consumer> create_consumer(const std::vector<std::wstring>& params)
+spl::shared_ptr<core::frame_consumer> create_consumer(
+		const std::vector<std::wstring>& params, core::interaction_sink*)
 {
 	if(params.size() < 1 || params[0] != L"BLUEFISH")
 		return core::frame_consumer::empty();
@@ -376,7 +385,8 @@ spl::shared_ptr<core::frame_consumer> create_consumer(const std::vector<std::wst
 	return spl::make_shared<bluefish_consumer_proxy>(device_index, embedded_audio, key_only);
 }
 
-spl::shared_ptr<core::frame_consumer> create_consumer(const boost::property_tree::wptree& ptree) 
+spl::shared_ptr<core::frame_consumer> create_preconfigured_consumer(
+		const boost::property_tree::wptree& ptree, core::interaction_sink*)
 {	
 	const auto device_index		= ptree.get(L"device",			1);
 	const auto embedded_audio	= ptree.get(L"embedded-audio",	false);

@@ -21,60 +21,61 @@
 
 #pragma once
 
-#include <common/enum_class.h>
-
 #include <vector>
 #include <string>
 #include <cstddef>
 
+#include <common/enum_class.h>
+
 namespace caspar { namespace core {
 	
-struct video_format_def 
+enum class video_format
 { 
-	enum type 
-	{
-		pal,		
-		ntsc,		
-		x576p2500,	
-		x720p2500,	
-		x720p5000,
-		x720p2398,
-		x720p2400,
-		x720p2997,
-		x720p5994,
-		x720p3000,
-		x720p6000,
-		x1080p2398,
-		x1080p2400,	
-		x1080i5000,	
-		x1080i5994,	
-		x1080i6000,	
-		x1080p2500,	
-		x1080p2997,	
-		x1080p3000,	
-		x1080p5000,
-		x1080p5994,
-		x1080p6000,
-		invalid,
-		count
-	};
+	pal,		
+	ntsc,		
+	x576p2500,	
+	x720p2500,	
+	x720p5000,
+	x720p2398,
+	x720p2400,
+	x720p2997,
+	x720p5994,
+	x720p3000,
+	x720p6000,
+	x1080p2398,
+	x1080p2400,	
+	x1080i5000,	
+	x1080i5994,	
+	x1080i6000,	
+	x1080p2500,	
+	x1080p2997,	
+	x1080p3000,	
+	x1080p5000,
+	x1080p5994,
+	x1080p6000,
+	x2k2398,
+	x2k2400,
+	x2k2500,
+	x4k2398,
+	x4k2400,
+	x4k2500,
+	x4k2997,
+	x4k3000,
+	invalid,
+	count
 };
-typedef enum_class<video_format_def> video_format;
 
-struct field_mode_def
+enum class field_mode
 {
-	enum type 
-	{
-		empty		= 0,
-		lower		= 1,
-		upper		= 2,
-		progressive = 3, // NOTE: progressive == lower | upper;
-	};
-	static_assert((lower | upper) == progressive, "");
+	empty		= 0,
+	lower		= 1,
+	upper		= 2,
+	progressive = 3 // NOTE: progressive == lower | upper;
 };
-typedef enum_class<field_mode_def> field_mode;
+ENUM_ENABLE_BITWISE(field_mode);
+//static_assert((field_mode::lower | field_mode::upper) == field_mode::progressive, "");
 
-struct video_format_desc sealed
+struct video_format_desc final
 {
 	video_format		format;		
 
@@ -82,7 +83,7 @@ struct video_format_desc sealed
 	int					height;		
 	int					square_width;
 	int					square_height;
-	field_mode			field_mode;	// progressive, interlaced upper field first, interlaced lower field first
+	core::field_mode	field_mode;	// progressive, interlaced upper field first, interlaced lower field first
 	double				fps;		// actual framerate = duration/time_scale, e.g. i50 = 25 fps, p50 = 50 fps
 	int					time_scale;
 	int					duration;
@@ -92,7 +93,7 @@ struct video_format_desc sealed
 
 	int					audio_sample_rate;
 	int					audio_channels;
-	std::vector<int>	audio_cadence;
+	std::vector<int>	audio_cadence;	// rotating optimal number of samples per frame
 
 	video_format_desc(video_format format,
 					  int width,

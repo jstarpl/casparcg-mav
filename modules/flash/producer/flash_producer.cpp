@@ -29,6 +29,8 @@
 #include "flash_producer.h"
 #include "FlashAxContainer.h"
 
+#include "../util/swf.h"
+
 #include <core/video_format.h>
 
 #include <core/frame/frame.h>
@@ -105,7 +107,7 @@ template_host get_template_host(const core::video_format_desc& desc)
 	try
 	{
 		std::vector<template_host> template_hosts;
-		BOOST_FOREACH(auto& xml_mapping, env::properties().get_child(L"configuration.template-hosts"))
+		for (auto& xml_mapping : env::properties().get_child(L"configuration.template-hosts"))
 		{
 			try
 			{
@@ -149,10 +151,9 @@ class flash_renderer
 {	
 	struct com_init
 	{
-		HRESULT result_;
+		HRESULT result_ = CoInitialize(nullptr);
 
 		com_init()
-			: result_(CoInitialize(nullptr))
 		{
 			if(FAILED(result_))
 				CASPAR_THROW_EXCEPTION(caspar_exception() << msg_info("Failed to initialize com-context for flash-player"));
@@ -165,34 +166,32 @@ class flash_renderer
 		}
 	} com_init_;
 
-	monitor::basic_subject&						event_subject_;
+	core::monitor::subject&							monitor_subject_;
 
-	const std::wstring							filename_;
+	const std::wstring								filename_;
+	const int										width_;
+	const int										height_;
 
-	const std::shared_ptr<core::frame_factory>	frame_factory_;
+	const std::shared_ptr<core::frame_factory>		frame_factory_;
 	
-	CComObject<caspar::flash::FlashAxContainer>* ax_;
-	core::draw_frame							head_;
-	bitmap										bmp_;
+	CComObject<caspar::flash::FlashAxContainer>*	ax_					= nullptr;
+	core::draw_frame								head_				= core::draw_frame::empty();
+	bitmap											bmp_				{ width_, height_ };
 	
-	spl::shared_ptr<diagnostics::graph>			graph_;
+	spl::shared_ptr<diagnostics::graph>				graph_;
 	
-	prec_timer									timer_;
+	prec_timer										timer_;
 
-	const int									width_;
-	const int									height_;
 	
 public:
-	flash_renderer(monitor::basic_subject& event_subject, const spl::shared_ptr<diagnostics::graph>& graph, const std::shared_ptr<core::frame_factory>& frame_factory, const std::wstring& filename, int width, int height) 
-		: event_subject_(event_subject)
+	flash_renderer(core::monitor::subject& monitor_subject, const spl::shared_ptr<diagnostics::graph>& graph, const std::shared_ptr<core::frame_factory>& frame_factory, const std::wstring& filename, int width, int height) 
+		: monitor_subject_(monitor_subject)
 		, graph_(graph)
 		, filename_(filename)
-		, frame_factory_(frame_factory)
-		, ax_(nullptr)
-		, head_(core::draw_frame::empty())
-		, bmp_(width, height)
 		, width_(width)
 		, height_(height)
+		, frame_factory_(frame_factory)
+		, bmp_(width, height)
 	{		
 		graph_->set_color("frame-time", diagnostics::color(0.1f, 1.0f, 0.1f));
 		graph_->set_color("param", diagnostics::color(1.0f, 0.5f, 0.0f));	
@@ -262,7 +261,7 @@ public:
 			graph_->set_tag("sync");
 
 		graph_->set_value("sync", sync);
-		event_subject_ << monitor::event("sync") % sync;
+		monitor_subject_ << core::monitor::message("/sync") % sync;
 		
 		ax_->Tick();
 					
@@ -297,7 +296,7 @@ public:
 		}		
 										
 		graph_->set_value("frame-time", static_cast<float>(frame_timer.elapsed()/frame_time)*0.5f);
-		event_subject_ << monitor::event("renderer/profiler/time") % frame_timer.elapsed() % frame_time;
+		monitor_subject_ << core::monitor::message("/renderer/profiler/time") % frame_timer.elapsed() % frame_time;
 		return head_;
 	}
 	
@@ -322,13 +321,14 @@ public:
 
 struct flash_producer : public core::frame_producer_base
 {	
-	monitor::basic_subject							event_subject_;
+	core::monitor::subject							monitor_subject_;
 	const std::wstring								filename_;	
 	const spl::shared_ptr<core::frame_factory>		frame_factory_;
 	const core::video_format_desc					format_desc_;
 	const int										width_;
 	const int										height_;
-	const int										buffer_size_;
+	core::constraints								constraints_		{ static_cast<double>(width_), static_cast<double>(height_) };
+	const int										buffer_size_		= env::properties().get(L"configuration.flash.buffer-depth", format_desc_.fps > 30.0 ? 4 : 2);
 
 	tbb::atomic<int>								fps_;
 
@@ -342,7 +342,7 @@ struct flash_producer : public core::frame_producer_base
 	boost::timer									tick_timer_;
 	std::unique_ptr<flash_renderer>					renderer_;
 	
-	executor										executor_;	
+	executor										executor_			= L"flash_producer";
 public:
 	flash_producer(const spl::shared_ptr<core::frame_factory>& frame_factory, const core::video_format_desc& format_desc, const std::wstring& filename, int width, int height) 
 		: filename_(filename)		
@@ -350,8 +350,6 @@ public:
 		, format_desc_(format_desc)
 		, width_(width > 0 ? width : format_desc.width)
 		, height_(height > 0 ? height : format_desc.height)
-		, buffer_size_(env::properties().get(L"configuration.flash.buffer-depth", format_desc.fps > 30.0 ? 4 : 2))
-		, executor_(L"flash_producer")
 	{	
 		fps_ = 0;
 	 
@@ -383,24 +381,31 @@ public:
 		else		
 			graph_->set_tag("late-frame");		
 				
-		event_subject_ << monitor::event("host/path")	% filename_
-					   << monitor::event("host/width")	% width_
-					   << monitor::event("host/height") % height_
-					   << monitor::event("host/fps")	% fps_
-					   << monitor::event("buffer")		% output_buffer_.size() % buffer_size_;
+		monitor_subject_ << core::monitor::message("/host/path")	% filename_
+						<< core::monitor::message("/host/width")	% width_
+						<< core::monitor::message("/host/height")	% height_
+						<< core::monitor::message("/host/fps")		% fps_
+						<< core::monitor::message("/buffer")		% output_buffer_.size() % buffer_size_;
 
 		return last_frame_ = frame;
 	}
+
+	core::constraints& pixel_constraints() override
+	{
+		return constraints_;
+	}
 		
-	boost::unique_future<std::wstring> call(const std::wstring& param) override
-	{	
+	std::future<std::wstring> call(const std::vector<std::wstring>& params) override
+	{
+		auto param = boost::algorithm::join(params, L" ");
+
 		return executor_.begin_invoke([this, param]() -> std::wstring
 		{			
 			try
 			{
 				if(!renderer_)
 				{
-					renderer_.reset(new flash_renderer(event_subject_, graph_, frame_factory_, filename_, width_, height_));
+					renderer_.reset(new flash_renderer(monitor_subject_, graph_, frame_factory_, filename_, width_, height_));
 
 					while(output_buffer_.size() < buffer_size_)
 						output_buffer_.push(core::draw_frame::empty());
@@ -435,14 +440,9 @@ public:
 		return info;
 	}
 
-	void subscribe(const monitor::observable::observer_ptr& o) override
+	core::monitor::subject& monitor_output()
 	{
-		event_subject_.subscribe(o);
-	}
-
-	void unsubscribe(const monitor::observable::observer_ptr& o) override
-	{
-		event_subject_.unsubscribe(o);
+		return monitor_subject_;
 	}
 
 	// flash_producer
@@ -492,7 +492,7 @@ public:
 		}
 
 		graph_->set_value("tick-time", static_cast<float>(tick_timer_.elapsed()/fps_)*0.5f);
-		event_subject_ << monitor::event("profiler/time") % tick_timer_.elapsed() % fps_;
+		monitor_subject_ << core::monitor::message("/profiler/time") % tick_timer_.elapsed() % fps_;
 
 		output_buffer_.push(std::move(frame_buffer_.front()));
 		frame_buffer_.pop();
@@ -509,6 +509,19 @@ spl::shared_ptr<core::frame_producer> create_producer(const spl::shared_ptr<core
 		CASPAR_THROW_EXCEPTION(file_not_found() << boost::errinfo_file_name(u8(filename)));	
 
 	return create_destroy_proxy(spl::make_shared<flash_producer>(frame_factory, format_desc, filename, template_host.width, template_host.height));
+}
+
+spl::shared_ptr<core::frame_producer> create_swf_producer(const spl::shared_ptr<core::frame_factory>& frame_factory, const core::video_format_desc& format_desc, const std::vector<std::wstring>& params)
+{
+	auto filename = env::media_folder() + L"\\" + params.at(0) + L".swf";
+
+	if (!boost::filesystem::exists(filename))
+		return core::frame_producer::empty();
+
+	swf_t::header_t header(filename);
+
+	return create_destroy_proxy(
+		spl::make_shared<flash_producer>(frame_factory, format_desc, filename, header.frame_width, header.frame_height));
 }
 
 std::wstring find_template(const std::wstring& template_name)

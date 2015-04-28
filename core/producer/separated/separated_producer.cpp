@@ -19,7 +19,7 @@
 * Author: Robert Nagy, ronag89@gmail.com
 */
 
-#include "../../stdafx.h"
+#include "../../StdAfx.h"
 
 #include "separated_producer.h"
 
@@ -29,32 +29,31 @@
 
 #include <tbb/parallel_invoke.h>
 
+#include <future>
+
 namespace caspar { namespace core {	
 
 class separated_producer : public frame_producer_base
 {		
-	monitor::basic_subject			event_subject_;
-	monitor::basic_subject			key_event_subject_;
+	spl::shared_ptr<monitor::subject>	monitor_subject_;
+	spl::shared_ptr<monitor::subject>	key_monitor_subject_	= spl::make_shared<monitor::subject>("/keyer");
 
 	spl::shared_ptr<frame_producer>	fill_producer_;
 	spl::shared_ptr<frame_producer>	key_producer_;
-	draw_frame						fill_;
-	draw_frame						key_;
+	draw_frame						fill_						= core::draw_frame::late();
+	draw_frame						key_						= core::draw_frame::late();
 			
 public:
 	explicit separated_producer(const spl::shared_ptr<frame_producer>& fill, const spl::shared_ptr<frame_producer>& key) 
-		: key_event_subject_("keyer")		
-		, fill_producer_(fill)
+		: fill_producer_(fill)
 		, key_producer_(key)
-		, fill_(core::draw_frame::late())
-		, key_(core::draw_frame::late())
 	{
 		CASPAR_LOG(info) << print() << L" Initialized";
 
-		key_event_subject_.subscribe(event_subject_);
+		key_monitor_subject_->attach_parent(monitor_subject_);
 
-		key_producer_->subscribe(key_event_subject_);
-		fill_producer_->subscribe(event_subject_);
+		key_producer_->monitor_output().attach_parent(key_monitor_subject_);
+		fill_producer_->monitor_output().attach_parent(monitor_subject_);
 	}
 
 	// frame_producer
@@ -88,6 +87,25 @@ public:
 	{
 		return draw_frame::mask(fill_producer_->last_frame(), key_producer_->last_frame());
 	}
+
+	draw_frame create_thumbnail_frame()
+	{
+		auto fill_frame = fill_producer_->create_thumbnail_frame();
+		auto key_frame = key_producer_->create_thumbnail_frame();
+
+		if (fill_frame == draw_frame::empty() || key_frame == draw_frame::empty())
+			return draw_frame::empty();
+
+		if (fill_frame == draw_frame::late() || key_frame == draw_frame::late())
+			return draw_frame::late();
+
+		return draw_frame::mask(fill_frame, key_frame);
+	}
+
+	constraints& pixel_constraints() override
+	{
+		return fill_producer_->pixel_constraints();
+	}
 				
 	uint32_t nb_frames() const override
 	{
@@ -99,10 +117,10 @@ public:
 		return L"separated[fill:" + fill_producer_->print() + L"|key[" + key_producer_->print() + L"]]";
 	}	
 
-	boost::unique_future<std::wstring> call(const std::wstring& str) override
+	std::future<std::wstring> call(const std::vector<std::wstring>& params) override
 	{
-		key_producer_->call(str);
-		return fill_producer_->call(str);
+		key_producer_->call(params);
+		return fill_producer_->call(params);
 	}
 
 	std::wstring name() const override
@@ -115,15 +133,7 @@ public:
 		return fill_producer_->info();;
 	}
 
-	void subscribe(const monitor::observable::observer_ptr& o) override															
-	{
-		return event_subject_.subscribe(o);
-	}
-
-	void unsubscribe(const monitor::observable::observer_ptr& o) override		
-	{
-		return event_subject_.unsubscribe(o);
-	}
+	monitor::subject& monitor_output() { return *monitor_subject_; }
 };
 
 spl::shared_ptr<frame_producer> create_separated_producer(const spl::shared_ptr<frame_producer>& fill, const spl::shared_ptr<frame_producer>& key)

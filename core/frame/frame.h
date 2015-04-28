@@ -8,11 +8,8 @@
 #include <common/memory.h>
 #include <common/forward.h>
 #include <common/array.h>
-
-#include <boost/range.hpp>
-#include <boost/any.hpp>
-
-#include <tbb/cache_aligned_allocator.h>
+#include <common/future_fwd.h>
+#include <common/cache_aligned_vector.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -21,9 +18,10 @@ FORWARD1(boost, template<typename> class shared_future);
 
 namespace caspar { namespace core {
 	
-typedef std::vector<int32_t, tbb::cache_aligned_allocator<int32_t>> audio_buffer;
+typedef cache_aligned_vector<int32_t> audio_buffer;
+class frame_geometry;
 
-class mutable_frame sealed
+class mutable_frame final
 {
 	mutable_frame(const mutable_frame&);
 	mutable_frame& operator=(const mutable_frame&);
@@ -61,13 +59,16 @@ public:
 								
 	const void* stream_tag() const;
 	const void* data_tag() const;
+
+	const core::frame_geometry& geometry() const;
+	void set_geometry(const frame_geometry& g);
 			
 private:
 	struct impl;
 	spl::unique_ptr<impl> impl_;
 };
 
-class const_frame sealed
+class const_frame final
 {
 public:	
 
@@ -78,7 +79,7 @@ public:
 	// Constructors
 
 	explicit const_frame(const void* tag = nullptr);
-	explicit const_frame(boost::shared_future<array<const std::uint8_t>> image, 
+	explicit const_frame(std::shared_future<array<const std::uint8_t>> image, 
 						audio_buffer audio_buffer, 
 						const void* tag, 
 						const struct pixel_format_desc& desc);
@@ -105,6 +106,9 @@ public:
 								
 	const void* stream_tag() const;
 	const void* data_tag() const;
+
+	const core::frame_geometry& geometry() const;
+	void set_geometry(const frame_geometry& g);
 
 	bool operator==(const const_frame& other);
 	bool operator!=(const const_frame& other);

@@ -21,7 +21,7 @@
 
 #pragma once
 
-#ifdef _DEBUG
+#if defined _DEBUG && defined _MSC_VER
 #include <crtdbg.h>
 #endif
 
@@ -44,11 +44,8 @@
 #include <tbb/concurrent_queue.h>
 #include <tbb/concurrent_unordered_map.h>
 
-#include <boost/assign.hpp>
 #include <boost/circular_buffer.hpp>
-#include <boost/timer.hpp>
 #include <boost/filesystem.hpp>
-#include <boost/foreach.hpp>
 #include <boost/range.hpp>
 #include <boost/range/adaptors.hpp>
 #include <boost/range/algorithm.hpp>
@@ -63,3 +60,4 @@
 
 #include <common/log.h>
 #include <common/except.h>
+#include <common/timer.h>

@@ -26,9 +26,12 @@
 
 #include "CIIProtocolStrategy.h"
 #include "CIICommandsImpl.h"
+
+#include <core/producer/cg_proxy.h>
+
 #include <sstream>
 #include <algorithm>
-#include <modules/flash/producer/cg_proxy.h>
+
 #include <boost/locale.hpp>
 #include <boost/algorithm/string/trim.hpp>
 #include <boost/algorithm/string/split.hpp>
@@ -62,13 +65,13 @@ void WriteCommand::Setup(const std::vector<std::wstring>& parameters)
 
 			std::wstringstream dataStream;
 
-			dataStream << TEXT("<templateData>");
+			dataStream << L"<templateData>";
 
 			std::vector<std::wstring>::size_type end = parameters.size();
 			for(std::vector<std::wstring>::size_type i = 3; i < end; ++i) 
-				dataStream << TEXT("<componentData id=\"field") << i-2 << TEXT("\"><data id=\"text\" value=\"") << parameters[i] << TEXT("\" /></componentData>"); 
+				dataStream << L"<componentData id=\"field" << i-2 << L"\"><data id=\"text\" value=\"" << parameters[i] << L"\" /></componentData>";
 
-			dataStream << TEXT("</templateData>");
+			dataStream << L"</templateData>";
 			xmlData_ = dataStream.str();
 		}
 	}
@@ -86,7 +89,7 @@ void WriteCommand::Execute()
 // ImagestoreCommand
 void ImagestoreCommand::Setup(const std::vector<std::wstring>& parameters) 
 {
-	if(parameters[1] == TEXT("7") && parameters.size() > 2) 
+	if(parameters[1] == L"7" && parameters.size() > 2)
 		titleName_ = parameters[2].substr(0, 4);	
 }
 
@@ -102,10 +105,10 @@ void MiscellaneousCommand::Setup(const std::vector<std::wstring>& parameters)
 {
 	//HAWRYS:	V\5\3\1\1\namn.tga\1
 	//			Display still
-	if((parameters.size() > 5) && parameters[1] == TEXT("5") && parameters[2] == TEXT("3"))
+	if((parameters.size() > 5) && parameters[1] == L"5" && parameters[2] == L"3")
 	{
 		filename_ = parameters[5];
-		filename_ = filename_.substr(0, filename_.find_last_of(TEXT('.')));
+		filename_ = filename_.substr(0, filename_.find_last_of(L'.'));
 		filename_.append(L".ft");
 		state_ = 0;
 		return;
@@ -113,9 +116,9 @@ void MiscellaneousCommand::Setup(const std::vector<std::wstring>& parameters)
 	
 	//NEPTUNE:	V\5\13\1\X\Template\0\TabField1\TabField2...
 	//			Add Template to layer X in the active templatehost
-	if((parameters.size() > 5) && parameters[1] == TEXT("5") && parameters[2] == TEXT("13"))
+	if((parameters.size() > 5) && parameters[1] == L"5" && parameters[2] == L"13")
 	{
-		layer_ = _ttoi(parameters[4].c_str());
+		layer_ = boost::lexical_cast<int>(parameters[4]);
 		filename_ = parameters[5];
 		if(filename_.find(L"PK/") == std::wstring::npos && filename_.find(L"PK\\") == std::wstring::npos)
 			filename_ = L"PK/" + filename_;
@@ -124,19 +127,19 @@ void MiscellaneousCommand::Setup(const std::vector<std::wstring>& parameters)
 		if(parameters.size() > 7) {
 			std::wstringstream dataStream;
 
-			dataStream << TEXT("<templateData>");
+			dataStream << L"<templateData>";
 			std::vector<std::wstring>::size_type end = parameters.size();
 			for(std::vector<std::wstring>::size_type i = 7; i < end; ++i) {
-				dataStream << TEXT("<componentData id=\"f") << i-7 << TEXT("\"><data id=\"text\" value=\"") << parameters[i] << TEXT("\" /></componentData>"); 
+				dataStream << L"<componentData id=\"f" << i-7 << L"\"><data id=\"text\" value=\"" << parameters[i] << L"\" /></componentData>";
 			}
-			dataStream << TEXT("</templateData>");
+			dataStream << L"</templateData>";
 
 			xmlData_ = dataStream.str();
 		}
 	}
 
 	// VIDEO MODE V\5\14\MODE
-	if((parameters.size() > 3) && parameters[1] == TEXT("5") && parameters[2] == TEXT("14"))
+	if((parameters.size() > 3) && parameters[1] == L"5" && parameters[2] == L"14")
 	{
 		std::wstring value = parameters[3];
 		std::transform(value.begin(), value.end(), value.begin(), toupper);
@@ -155,7 +158,11 @@ void MiscellaneousCommand::Execute()
 	{
 		// HACK fix. The data sent is UTF8, however the protocol is implemented for ISO-8859-1. Instead of doing risky changes we simply convert into proper encoding when leaving protocol code.
 		auto xmlData2 = boost::locale::conv::utf_to_utf<wchar_t, char>(std::string(xmlData_.begin(), xmlData_.end()));
-		flash::create_cg_proxy(pCIIStrategy_->GetChannel()).add(layer_, filename_, false, TEXT(""), xmlData2);
+		auto proxy = pCIIStrategy_->get_cg_registry()->get_or_create_proxy(
+				pCIIStrategy_->GetChannel(),
+				core::cg_proxy::DEFAULT_LAYER,
+				filename_);
+		proxy->add(layer_, filename_, false, L"", xmlData2);
 	}
 }
 
@@ -164,17 +171,19 @@ void MiscellaneousCommand::Execute()
 // KeydataCommand
 void KeydataCommand::Execute() 
 {
-	if(state_ == 0)	
+	auto proxy = pCIIStrategy_->get_cg_registry()->get_proxy(
+		pCIIStrategy_->GetChannel(), casparLayer_);
+
+	if (state_ == 0)
 		pCIIStrategy_->DisplayTemplate(titleName_);
-	
 
 	//TODO: Need to be checked for validity
 	else if(state_ == 1)
-		flash::create_cg_proxy(pCIIStrategy_->GetChannel(), casparLayer_).stop(layer_, 0);
+		proxy->stop(layer_, 0);
 	else if(state_ == 2)
 		pCIIStrategy_->GetChannel()->stage().clear();
 	else if(state_ == 3)
-		flash::create_cg_proxy(pCIIStrategy_->GetChannel(), casparLayer_).play(layer_);
+		proxy->play(layer_);
 }
 
 void KeydataCommand::Setup(const std::vector<std::wstring>& parameters) {
@@ -186,7 +195,7 @@ void KeydataCommand::Setup(const std::vector<std::wstring>& parameters) {
 		for(int i=0;i<4;++i)
 		{
 			if(parameters[1][i+3] < 176) {
-				titleName_ = TEXT("");
+				titleName_ = L"";
 				break;
 			}
 			titleName_[i] = parameters[1][i+3]-144;
@@ -194,7 +203,7 @@ void KeydataCommand::Setup(const std::vector<std::wstring>& parameters) {
 		state_ = 0;
 	}
 
-	casparLayer_ = flash::cg_proxy::DEFAULT_LAYER;
+	casparLayer_ = core::cg_proxy::DEFAULT_LAYER;
 	if(parameters.size() > 2)
 	{
 		//The layer parameter now supports casparlayers.
@@ -212,7 +221,7 @@ void KeydataCommand::Setup(const std::vector<std::wstring>& parameters) {
 		}
 		catch(...)
 		{ 
-			casparLayer_ = flash::cg_proxy::DEFAULT_LAYER;
+			casparLayer_ = core::cg_proxy::DEFAULT_LAYER;
 			layer_ = 0;
 		}
 	}

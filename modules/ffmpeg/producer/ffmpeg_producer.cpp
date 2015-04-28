@@ -19,7 +19,7 @@
 * Author: Robert Nagy, ronag89@gmail.com
 */
 
-#include "../stdafx.h"
+#include "../StdAfx.h"
 
 #include "ffmpeg_producer.h"
 
@@ -36,6 +36,7 @@
 #include <common/param.h>
 #include <common/diagnostics/graph.h>
 #include <common/future.h>
+#include <common/timer.h>
 
 #include <core/video_format.h>
 #include <core/producer/frame_producer.h>
@@ -46,12 +47,7 @@
 
 #include <boost/algorithm/string.hpp>
 #include <common/assert.h>
-#include <boost/assign.hpp>
-#include <boost/timer.hpp>
-#include <boost/foreach.hpp>
 #include <boost/filesystem.hpp>
-#include <boost/range/algorithm/find_if.hpp>
-#include <boost/range/algorithm/find.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <boost/regex.hpp>
 #include <boost/thread/future.hpp>
@@ -63,11 +59,37 @@
 #include <queue>
 
 namespace caspar { namespace ffmpeg {
-				
+
+std::wstring get_relative_or_original(
+		const std::wstring& filename,
+		const boost::filesystem::wpath& relative_to)
+{
+	boost::filesystem::wpath file(filename);
+	auto result = file.filename().wstring();
+
+	boost::filesystem::wpath current_path = file;
+
+	while (true)
+	{
+		current_path = current_path.parent_path();
+
+		if (boost::filesystem::equivalent(current_path, relative_to))
+			break;
+
+		if (current_path.empty())
+			return filename;
+
+		result = current_path.filename().wstring() + L"/" + result;
+	}
+
+	return result;
+}
+
 struct ffmpeg_producer : public core::frame_producer_base
 {
-	monitor::basic_subject							event_subject_;
+	spl::shared_ptr<core::monitor::subject>			monitor_subject_;
 	const std::wstring								filename_;
+	const std::wstring								path_relative_to_media_	= get_relative_or_original(filename_, env::media_folder());
 	
 	const spl::shared_ptr<diagnostics::graph>		graph_;
 					
@@ -76,14 +98,15 @@ struct ffmpeg_producer : public core::frame_producer_base
 
 	input											input_;	
 
-	const double									fps_;
+	const double									fps_					= read_fps(input_.context(), format_desc_.fps);
 	const uint32_t									start_;
 		
 	std::unique_ptr<video_decoder>					video_decoder_;
 	std::unique_ptr<audio_decoder>					audio_decoder_;	
 	frame_muxer										muxer_;
+	core::constraints								constraints_;
 	
-	core::draw_frame								last_frame_;
+	core::draw_frame								last_frame_				= core::draw_frame::empty();
 
 	boost::optional<uint32_t>						seek_target_;
 	
@@ -102,7 +125,6 @@ public:
 		, fps_(read_fps(input_.context(), format_desc_.fps))
 		, muxer_(fps_, frame_factory, format_desc_, filter)
 		, start_(start)
-		, last_frame_(core::draw_frame::empty())
 	{
 		graph_->set_color("frame-time", diagnostics::color(0.1f, 1.0f, 0.1f));
 		graph_->set_color("underflow", diagnostics::color(0.6f, 0.3f, 0.9f));	
@@ -112,7 +134,9 @@ public:
 		try
 		{
 			video_decoder_.reset(new video_decoder(input_));
-			video_decoder_->subscribe(event_subject_);
+			video_decoder_->monitor_output().attach_parent(monitor_subject_);
+			constraints_.width.set(video_decoder_->width());
+			constraints_.height.set(video_decoder_->height());
 			
 			CASPAR_LOG(info) << print() << L" " << video_decoder_->print();
 		}
@@ -129,7 +153,7 @@ public:
 		try
 		{
 			audio_decoder_ .reset(new audio_decoder(input_, format_desc_));
-			audio_decoder_->subscribe(event_subject_);
+			audio_decoder_->monitor_output().attach_parent(monitor_subject_);
 			
 			CASPAR_LOG(info) << print() << L" " << audio_decoder_->print();
 		}
@@ -154,7 +178,7 @@ public:
 	{				
 		auto frame = core::draw_frame::late();		
 		
-		boost::timer frame_timer;
+		caspar::timer frame_timer;
 		
 		end_seek();
 				
@@ -169,15 +193,16 @@ public:
 			graph_->set_tag("underflow");
 									
 		graph_->set_value("frame-time", frame_timer.elapsed()*format_desc_.fps*0.5);
-		event_subject_	<< monitor::event("profiler/time") % frame_timer.elapsed() % (1.0/format_desc_.fps);			
-								
-		event_subject_	<< monitor::event("file/time")			% monitor::duration(file_frame_number()/fps_) 
-																% monitor::duration(file_nb_frames()/fps_)
-						<< monitor::event("file/frame")			% static_cast<int32_t>(file_frame_number())
-																% static_cast<int32_t>(file_nb_frames())
-						<< monitor::event("file/fps")			% fps_
-						<< monitor::event("file/path")			% filename_
-						<< monitor::event("loop")				% input_.loop();
+		*monitor_subject_
+				<< core::monitor::message("/profiler/time")	% frame_timer.elapsed() % (1.0/format_desc_.fps);			
+		*monitor_subject_
+				<< core::monitor::message("/file/time")		% (file_frame_number()/fps_) 
+															% (file_nb_frames()/fps_)
+				<< core::monitor::message("/file/frame")	% static_cast<int32_t>(file_frame_number())
+															% static_cast<int32_t>(file_nb_frames())
+				<< core::monitor::message("/file/fps")		% fps_
+				<< core::monitor::message("/file/path")		% path_relative_to_media_
+				<< core::monitor::message("/loop")			% input_.loop();
 						
 		return frame;
 	}
@@ -187,7 +212,12 @@ public:
 		end_seek();
 		return core::draw_frame::still(last_frame_);
 	}
-		
+
+	core::constraints& pixel_constraints() override
+	{
+		return constraints_;
+	}
+
 	uint32_t nb_frames() const override
 	{
 		if(input_.loop())
@@ -214,12 +244,14 @@ public:
 		return video_decoder_ ? video_decoder_->file_frame_number() : 0;
 	}
 		
-	boost::unique_future<std::wstring> call(const std::wstring& param) override
+	std::future<std::wstring> call(const std::vector<std::wstring>& params) override
 	{
-		static const boost::wregex loop_exp(L"LOOP\\s*(?<VALUE>\\d?)?", boost::regex::icase);
-		static const boost::wregex seek_exp(L"SEEK\\s+(?<VALUE>\\d+)", boost::regex::icase);
-		static const boost::wregex length_exp(L"LENGTH\\s+(?<VALUE>\\d+)?", boost::regex::icase);
-		static const boost::wregex start_exp(L"START\\s+(?<VALUE>\\d+)?", boost::regex::icase);
+		static const boost::wregex loop_exp(LR"(LOOP\s*(?<VALUE>\d?)?)", boost::regex::icase);
+		static const boost::wregex seek_exp(LR"(SEEK\s+(?<VALUE>\d+))", boost::regex::icase);
+		static const boost::wregex length_exp(LR"(LENGTH\s+(?<VALUE>\d+)?)", boost::regex::icase);
+		static const boost::wregex start_exp(LR"(START\\s+(?<VALUE>\\d+)?)", boost::regex::icase);
+
+		auto param = boost::algorithm::join(params, L" ");
 		
 		std::wstring result;
 			
@@ -253,7 +285,7 @@ public:
 		else
 			CASPAR_THROW_EXCEPTION(invalid_argument());
 
-		return async(launch::deferred, [=]{return result;});
+		return make_ready_future(std::move(result));
 	}
 				
 	std::wstring print() const override
@@ -286,14 +318,9 @@ public:
 		return info;
 	}
 	
-	void subscribe(const monitor::observable::observer_ptr& o) override
+	core::monitor::subject& monitor_output()
 	{
-		event_subject_.subscribe(o);
-	}
-
-	void unsubscribe(const monitor::observable::observer_ptr& o) override
-	{
-		event_subject_.unsubscribe(o);
+		return *monitor_subject_;
 	}
 
 	// ffmpeg_producer
@@ -372,12 +399,12 @@ public:
 
 spl::shared_ptr<core::frame_producer> create_producer(const spl::shared_ptr<core::frame_factory>& frame_factory, const core::video_format_desc& format_desc, const std::vector<std::wstring>& params)
 {		
-	auto filename = probe_stem(env::media_folder() + L"\\" + params.at(0));
+	auto filename = probe_stem(env::media_folder() + L"/" + params.at(0));
 
 	if(filename.empty())
 		return core::frame_producer::empty();
 	
-	auto loop		= boost::range::find(params, L"LOOP") != params.end();
+	bool loop		= contains_param(L"LOOP", params);
 	auto start		= get_param(L"START", params, get_param(L"SEEK", params, static_cast<uint32_t>(0)));
 	auto length		= get_param(L"LENGTH", params, std::numeric_limits<uint32_t>::max());
 	auto filter_str = get_param(L"FILTER", params, L""); 	

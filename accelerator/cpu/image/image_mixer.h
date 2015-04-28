@@ -20,9 +20,9 @@ FORWARD2(caspar, core, struct frame_transform);
 
 namespace caspar { namespace accelerator { namespace cpu {
 	
-typedef std::vector<uint8_t, tbb::cache_aligned_allocator<uint8_t>> buffer;
+typedef cache_aligned_vector<uint8_t> buffer;
 
-class image_mixer sealed : public core::image_mixer
+class image_mixer final : public core::image_mixer
 {
 public:
 
@@ -42,7 +42,7 @@ public:
 	virtual void visit(const core::const_frame& frame);
 	virtual void pop();
 		
-	boost::unique_future<array<const std::uint8_t>> operator()(const core::video_format_desc& format_desc) override;
+	std::future<array<const std::uint8_t>> operator()(const core::video_format_desc& format_desc) override;
 		
 	core::mutable_frame create_frame(const void* tag, const core::pixel_format_desc& desc) override;
 

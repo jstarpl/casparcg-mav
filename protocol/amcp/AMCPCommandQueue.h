@@ -25,7 +25,7 @@
 
 #include <common/executor.h>
 
-#include <tbb\mutex.h>
+#include <tbb/mutex.h>
 
 namespace caspar { namespace protocol { namespace amcp {
 
@@ -34,14 +34,15 @@ class AMCPCommandQueue
 	AMCPCommandQueue(const AMCPCommandQueue&);
 	AMCPCommandQueue& operator=(const AMCPCommandQueue&);
 public:
+	typedef std::shared_ptr<AMCPCommandQueue> ptr_type;
+
 	AMCPCommandQueue();
 	~AMCPCommandQueue();
 
-	void AddCommand(AMCPCommandPtr pCommand);
+	void AddCommand(AMCPCommand::ptr_type pCommand);
 
 private:
 	executor			executor_;
 };
-typedef std::tr1::shared_ptr<AMCPCommandQueue> AMCPCommandQueuePtr;
 
 }}}

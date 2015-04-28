@@ -21,10 +21,9 @@
 
 #pragma once
 
-#include "../util/clientinfo.h"
-
+#include "../util/ClientInfo.h"
+#include "amcp_shared.h"
 #include <core/consumer/frame_consumer.h>
-#include <core/video_channel.h>
 
 #include <boost/algorithm/string.hpp>
 
@@ -33,74 +32,99 @@ namespace amcp {
 	
 	class AMCPCommand
 	{
-		AMCPCommand(const AMCPCommand&);
 		AMCPCommand& operator=(const AMCPCommand&);
-	public:
-		AMCPCommand();
-		virtual ~AMCPCommand() {}
-		virtual bool Execute() = 0;
+	protected:
+		AMCPCommand(const AMCPCommand& rhs) : client_(rhs.client_), parameters_(rhs.parameters_)
+		{}
 
-		virtual bool NeedChannel() = 0;
-		virtual int GetMinimumParameters() = 0;
+	public:
+		typedef std::shared_ptr<AMCPCommand> ptr_type;
+
+		explicit AMCPCommand(IO::ClientInfoPtr client) : client_(client) {}
+		virtual ~AMCPCommand() {}
+
+		virtual bool Execute() = 0;
+		virtual int minimum_parameters() = 0;
 
 		void SendReply();
 
-		void AddParameter(const std::wstring& param){_parameters.push_back(param);}
+		std::vector<std::wstring>& parameters() { return parameters_; }
 
-		void SetClientInfo(IO::ClientInfoPtr& s){pClientInfo_ = s;}
-		IO::ClientInfoPtr GetClientInfo(){return pClientInfo_;}
-
-		void SetChannel(const std::shared_ptr<core::video_channel>& pChannel){pChannel_ = pChannel;}
-		std::shared_ptr<core::video_channel> GetChannel(){return pChannel_;}
-
-		void SetChannels(const std::vector<spl::shared_ptr<core::video_channel>>& channels){channels_ = channels;}
-		const std::vector<spl::shared_ptr<core::video_channel>>& GetChannels() { return channels_; }
-
-		void SetChannelIndex(unsigned int channelIndex){channelIndex_ = channelIndex;}
-		unsigned int GetChannelIndex(){return channelIndex_;}
-
-		void SetLayerIntex(int layerIndex){layerIndex_ = layerIndex;}
-		int GetLayerIndex(int defaultValue = 0) const{return layerIndex_ != -1 ? layerIndex_ : defaultValue;}
-
-		virtual void Clear();
+		IO::ClientInfoPtr client() { return client_; }
 
 		virtual std::wstring print() const = 0;
 
 		void SetReplyString(const std::wstring& str){replyString_ = str;}
 
-	protected:
-		std::vector<std::wstring> _parameters;
-		std::vector<std::wstring> _parameters2;
-
 	private:
-		unsigned int channelIndex_;
-		int layerIndex_;
-		IO::ClientInfoPtr pClientInfo_;
-		std::shared_ptr<core::video_channel> pChannel_;
-		std::vector<spl::shared_ptr<core::video_channel>> channels_;
+		std::vector<std::wstring> parameters_;
+		IO::ClientInfoPtr client_;
 		std::wstring replyString_;
 	};
 
-	typedef std::tr1::shared_ptr<AMCPCommand> AMCPCommandPtr;
-
-	template<bool TNeedChannel,int TMinParameters>
+	template<int TMinParameters>
 	class AMCPCommandBase : public AMCPCommand
 	{
+	protected:
+		explicit AMCPCommandBase(IO::ClientInfoPtr client) : AMCPCommand(client) {}
+		AMCPCommandBase(const AMCPCommandBase& rhs) : AMCPCommand(rhs) {}
+		template<int T>
+		AMCPCommandBase(const AMCPCommandBase<T>& rhs) : AMCPCommand(rhs) {}
+
+		~AMCPCommandBase(){}
 	public:
 		virtual bool Execute()
 		{
-			_parameters2 = _parameters;
-			for(size_t n = 0; n < _parameters.size(); ++n)
-				_parameters[n] = boost::to_upper_copy(_parameters[n]);
-			return (TNeedChannel && !GetChannel()) || _parameters.size() < TMinParameters ? false : DoExecute();
+			return (parameters().size() < TMinParameters) ? false : DoExecute();
 		}
-
-		virtual bool NeedChannel(){return TNeedChannel;}		
-		virtual int GetMinimumParameters(){return TMinParameters;}
-	protected:
-		~AMCPCommandBase(){}
+		virtual int minimum_parameters(){return TMinParameters;}
 	private:
 		virtual bool DoExecute() = 0;
 	};	
 
+	class AMCPChannelCommand
+	{
+	protected:
+		AMCPChannelCommand(const channel_context& ctx, unsigned int channel_index, int layer_index) : ctx_(ctx), channel_index_(channel_index), layer_index_(layer_index)
+		{}
+		AMCPChannelCommand(const AMCPChannelCommand& rhs) : ctx_(rhs.ctx_), channel_index_(rhs.channel_index_), layer_index_(rhs.layer_index_)
+		{}
+
+		spl::shared_ptr<core::video_channel>& channel() { return ctx_.channel; }
+		spl::shared_ptr<IO::lock_container>& lock_container() { return ctx_.lock; }
+
+		unsigned int channel_index(){return channel_index_;}
+		int layer_index(int default_ = 0) const{return layer_index_ != -1 ? layer_index_ : default_; }
+
+	private:
+		unsigned int channel_index_;
+		int layer_index_;
+		channel_context ctx_;
+	};
+
+	class AMCPChannelsAwareCommand
+	{
+	protected:
+		AMCPChannelsAwareCommand(const std::vector<channel_context>& channels) : channels_(channels) {}
+		AMCPChannelsAwareCommand(const AMCPChannelsAwareCommand& rhs) : channels_(rhs.channels_) {}
+
+		const std::vector<channel_context>& channels() { return channels_; }
+
+	private:
+		const std::vector<channel_context>& channels_;
+	};
+
+	template<int TMinParameters>
+	class AMCPChannelCommandBase : public AMCPChannelCommand, public AMCPCommandBase<TMinParameters>
+	{
+	public:
+		AMCPChannelCommandBase(IO::ClientInfoPtr client, const channel_context& channel, unsigned int channel_index, int layer_index) : AMCPChannelCommand(channel, channel_index, layer_index), AMCPCommandBase<TMinParameters>(client)
+		{}
+	protected:
+		AMCPChannelCommandBase(const AMCPChannelCommandBase& rhs) : AMCPChannelCommand(rhs), AMCPCommandBase<TMinParameters>(rhs)
+		{}
+		template<int T>
+		AMCPChannelCommandBase(const AMCPChannelCommandBase<T>& rhs) : AMCPChannelCommand(rhs), AMCPCommandBase<TMinParameters>(rhs)
+		{}
+	};
 }}}

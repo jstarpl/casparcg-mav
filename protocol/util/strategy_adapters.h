@@ -61,30 +61,29 @@ class delimiter_based_chunking_strategy : public protocol_strategy<CharT>
 {
 	std::basic_string<CharT> delimiter_;
 	std::basic_string<CharT> input_;
-	protocol_strategy<CharT>::ptr strategy_;
+	typename protocol_strategy<CharT>::ptr strategy_;
 public:
 	delimiter_based_chunking_strategy(
 			const std::basic_string<CharT>& delimiter, 
-			const protocol_strategy<CharT>::ptr& strategy)
+			const typename protocol_strategy<CharT>::ptr& strategy)
 		: delimiter_(delimiter)
 		, strategy_(strategy)
 	{
 	}
 
-	virtual void parse(const std::basic_string<char>& data)
+	virtual void parse(const std::basic_string<CharT>& data)
 	{
 		input_ += data;
 
-		std::vector<std::basic_string<CharT>> split;
-		boost::iter_split(split, input_, boost::algorithm::first_finder(delimiter_));
+		//boost::iter_split(split, input_, boost::algorithm::first_finder(delimiter_)) was painfully slow in debug-build
 
-		input_ = std::move(split.back());
-		split.pop_back();
-
-		BOOST_FOREACH(auto cmd, split)
+		auto delim_pos = input_.find_first_of(delimiter_);
+		while(delim_pos != std::string::npos)
 		{
-			// TODO: perhaps it would be better to not append the delimiter.
-			strategy_->parse(cmd + delimiter_);
+			strategy_->parse(input_.substr(0, delim_pos));
+
+			input_ = std::move(input_.substr(delim_pos+delimiter_.size()));
+			delim_pos = input_.find_first_of(delimiter_);
 		}
 	}
 };
@@ -94,11 +93,11 @@ class delimiter_based_chunking_strategy_factory
 	: public protocol_strategy_factory<CharT>
 {
 	std::basic_string<CharT> delimiter_;
-	protocol_strategy_factory<CharT>::ptr strategy_factory_;
+	typename protocol_strategy_factory<CharT>::ptr strategy_factory_;
 public:
 	delimiter_based_chunking_strategy_factory(
 			const std::basic_string<CharT>& delimiter, 
-			const protocol_strategy_factory<CharT>::ptr& strategy_factory)
+			const typename protocol_strategy_factory<CharT>::ptr& strategy_factory)
 		: delimiter_(delimiter)
 		, strategy_factory_(strategy_factory)
 	{

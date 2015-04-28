@@ -39,7 +39,6 @@
 #include <boost/lexical_cast.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <boost/timer.hpp>
-#include <boost/foreach.hpp>
 #include <boost/thread/once.hpp>
 
 #include <tbb/concurrent_queue.h>
@@ -51,17 +50,15 @@
 
 namespace caspar { namespace oal {
 
-typedef std::vector<int16_t, tbb::cache_aligned_allocator<int16_t>> audio_buffer_16;
+typedef cache_aligned_vector<int16_t> audio_buffer_16;
 
 class device
 {
-	ALCdevice*											device_;
-	ALCcontext*											context_;
+	ALCdevice*		device_		= nullptr;
+	ALCcontext*		context_	= nullptr;
 
 public:
 	device()
-		: device_(0)
-		, context_(0)
 	{
 		device_ = alcOpenDevice(nullptr);
 
@@ -104,22 +101,21 @@ void init_device()
 
 struct oal_consumer : public core::frame_consumer
 {
-	spl::shared_ptr<diagnostics::graph>					graph_;
-	boost::timer										perf_timer_;
-	int													channel_index_;
+	core::monitor::subject				monitor_subject_;
+
+	spl::shared_ptr<diagnostics::graph>	graph_;
+	boost::timer						perf_timer_;
+	int									channel_index_		= -1;
 	
-	core::video_format_desc								format_desc_;
+	core::video_format_desc				format_desc_;
 
-	ALuint												source_;
-	std::array<ALuint, 3>								buffers_;
+	ALuint								source_				= 0;
+	std::array<ALuint, 3>				buffers_;
 
-	executor											executor_;
+	executor							executor_			= L"oal_consumer";
 
 public:
 	oal_consumer() 
-		: channel_index_(-1)
-		, source_(0)
-		, executor_(L"oal_consumer")
 	{
 		buffers_.assign(0);
 
@@ -141,7 +137,7 @@ public:
 				alDeleteSources(1, &source_);
 			}
 
-			BOOST_FOREACH(auto& buffer, buffers_)
+			for (auto& buffer : buffers_)
 			{
 				if(buffer)
 					alDeleteBuffers(1, &buffer);
@@ -164,7 +160,7 @@ public:
 
 			for(std::size_t n = 0; n < buffers_.size(); ++n)
 			{
-				std::vector<int16_t> audio(format_desc_.audio_cadence[n % format_desc_.audio_cadence.size()], 0);
+				std::vector<int16_t> audio(format_desc_.audio_cadence[n % format_desc_.audio_cadence.size()]*format_desc_.audio_channels, 0);
 				alBufferData(buffers_[n], AL_FORMAT_STEREO16, audio.data(), static_cast<ALsizei>(audio.size()*sizeof(int16_t)), format_desc_.audio_sample_rate);
 				alSourceQueueBuffers(source_, 1, &buffers_[n]);
 			}
@@ -175,7 +171,7 @@ public:
 		});
 	}
 	
-	boost::unique_future<bool> send(core::const_frame frame) override
+	std::future<bool> send(core::const_frame frame) override
 	{
 		// Will only block if the default executor queue capacity of 512 is
 		// exhausted, which should not happen
@@ -191,7 +187,7 @@ public:
 					alSourceUnqueueBuffers(source_, 1, &buffer);
 					if(buffer)
 					{
-						std::vector<int16_t> audio(format_desc_.audio_cadence[n % format_desc_.audio_cadence.size()], 0);
+						std::vector<int16_t> audio(format_desc_.audio_cadence[n % format_desc_.audio_cadence.size()] * format_desc_.audio_channels, 0);
 						alBufferData(buffer, AL_FORMAT_STEREO16, audio.data(), static_cast<ALsizei>(audio.size()*sizeof(int16_t)), format_desc_.audio_sample_rate);
 						alSourceQueueBuffers(source_, 1, &buffer);
 					}
@@ -216,7 +212,7 @@ public:
 			perf_timer_.restart();
 		});
 
-		return wrap_as_future(true);
+		return make_ready_future(true);
 	}
 	
 	std::wstring print() const override
@@ -240,10 +236,17 @@ public:
 	{
 		return false;
 	}
+
+	int delay_millis() const
+	{
+		return 60;
+	}
 	
 	int buffer_depth() const override
 	{
-		return 3;
+		int delay_in_frames = static_cast<int>(delay_millis() / (1000.0 / format_desc_.fps));
+		
+		return delay_in_frames;
 	}
 		
 	int index() const override
@@ -251,16 +254,13 @@ public:
 		return 500;
 	}
 
-	void subscribe(const monitor::observable::observer_ptr& o) override
+	core::monitor::subject& monitor_output()
 	{
+		return monitor_subject_;
 	}
-
-	void unsubscribe(const monitor::observable::observer_ptr& o) override
-	{
-	}	
 };
 
-spl::shared_ptr<core::frame_consumer> create_consumer(const std::vector<std::wstring>& params)
+spl::shared_ptr<core::frame_consumer> create_consumer(const std::vector<std::wstring>& params, core::interaction_sink*)
 {
 	if(params.size() < 1 || params[0] != L"AUDIO")
 		return core::frame_consumer::empty();
@@ -268,7 +268,7 @@ spl::shared_ptr<core::frame_consumer> create_consumer(const std::vector<std::wst
 	return spl::make_shared<oal_consumer>();
 }
 
-spl::shared_ptr<core::frame_consumer> create_consumer()
+spl::shared_ptr<core::frame_consumer> create_preconfigured_consumer(const boost::property_tree::wptree&, core::interaction_sink*)
 {
 	return spl::make_shared<oal_consumer>();
 }

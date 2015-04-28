@@ -19,7 +19,7 @@
 * Author: Robert Nagy, ronag89@gmail.com
 */
 
-#include "../../stdafx.h"
+#include "../../StdAfx.h"
 
 #include "image_mixer.h"
 
@@ -39,22 +39,20 @@
 
 #include <asmlib.h>
 
-#include <gl/glew.h>
+#include <GL/glew.h>
 
-#include <tbb/cache_aligned_allocator.h>
 #include <tbb/parallel_for.h>
 #include <tbb/parallel_for_each.h>
 #include <tbb/concurrent_queue.h>
 
-#include <boost/assign.hpp>
-#include <boost/foreach.hpp>
-#include <boost/range.hpp>
 #include <boost/range/algorithm_ext/erase.hpp>
 #include <boost/thread/future.hpp>
 
 #include <algorithm>
 #include <cstdint>
 #include <vector>
+#include <set>
+#include <array>
 
 #if defined(_MSC_VER)
 #pragma warning (push)
@@ -74,12 +72,11 @@ namespace caspar { namespace accelerator { namespace cpu {
 		
 struct item
 {
-	core::pixel_format_desc			pix_desc;
+	core::pixel_format_desc			pix_desc	= core::pixel_format::invalid;
 	std::array<const uint8_t*, 4>	data;
 	core::image_transform			transform;
 
 	item()
-		: pix_desc(core::pixel_format::invalid)
 	{
 		data.fill(0);
 	}
@@ -144,7 +141,7 @@ static void kernel(uint8_t* dest, const uint8_t* source, size_t count)
 {			
 	using namespace xmm;
 
-	if(reinterpret_cast<int>(dest) % 16 != 0 || reinterpret_cast<int>(source) % 16 != 0)
+	if(reinterpret_cast<long>(dest) % 16 != 0 || reinterpret_cast<long>(source) % 16 != 0)
 		kernel<temporal_tag, unaligned_tag>(dest, source, count);
 	else
 		kernel<temporal_tag, aligned_tag>(dest, source, count);
@@ -155,7 +152,7 @@ class image_renderer
 	tbb::concurrent_unordered_map<int64_t, tbb::concurrent_bounded_queue<std::shared_ptr<SwsContext>>>	sws_devices_;
 	tbb::concurrent_bounded_queue<spl::shared_ptr<buffer>>												temp_buffers_;
 public:	
-	boost::unique_future<array<const std::uint8_t>> operator()(std::vector<item> items, const core::video_format_desc& format_desc)
+	std::future<array<const std::uint8_t>> operator()(std::vector<item> items, const core::video_format_desc& format_desc)
 	{	
 		convert(items, format_desc.width, format_desc.height);		
 				
@@ -166,7 +163,7 @@ public:
 		});
 		
 		// Stills are progressive
-		BOOST_FOREACH(auto item, items)
+		for (auto& item : items)
 		{
 			if(item.transform.is_still)
 				item.transform.field_mode = core::field_mode::progressive;
@@ -185,17 +182,14 @@ public:
 
 		temp_buffers_.clear();
 		
-		return async(launch::deferred, [=]
-		{
-			return array<const std::uint8_t>(result->data(), format_desc.size, true, result);
-		});	
+		return make_ready_future(array<const std::uint8_t>(result->data(), format_desc.size, true, result));
 	}
 
 private:
 
 	void draw(std::vector<item> items, uint8_t* dest, std::size_t width, std::size_t height, core::field_mode field_mode)
 	{		
-		BOOST_FOREACH(auto& item, items)
+		for (auto& item : items)
 			item.transform.field_mode &= field_mode;
 		
 		// Remove empty items.
@@ -238,7 +232,7 @@ private:
 	{
 		std::set<std::array<const uint8_t*, 4>> buffers;
 
-		BOOST_FOREACH(auto& item, source_items)
+		for (auto& item : source_items)
 			buffers.insert(item.data);
 		
 		auto dest_items = source_items;
@@ -291,10 +285,10 @@ private:
 			{
 				if(source_items[n].data == data)
 				{
-					dest_items[n].data.assign(0);
+					dest_items[n].data.fill(0);
 					dest_items[n].data[0]			= dest_frame->data();
 					dest_items[n].pix_desc			= core::pixel_format_desc(core::pixel_format::bgra);
-					dest_items[n].pix_desc.planes	= boost::assign::list_of(core::pixel_format_desc::plane(width, height, 4));
+					dest_items[n].pix_desc.planes	= { core::pixel_format_desc::plane(width, height, 4) };
 					dest_items[n].transform			= source_items[n].transform;
 				}
 			}
@@ -357,15 +351,15 @@ public:
 	{		
 	}
 	
-	boost::unique_future<array<const std::uint8_t>> render(const core::video_format_desc& format_desc)
+	std::future<array<const std::uint8_t>> render(const core::video_format_desc& format_desc)
 	{
 		return renderer_(std::move(items_), format_desc);
 	}
 	
-	virtual core::mutable_frame create_frame(const void* tag, const core::pixel_format_desc& desc)
+	core::mutable_frame create_frame(const void* tag, const core::pixel_format_desc& desc)
 	{
 		std::vector<array<std::uint8_t>> buffers;
-		BOOST_FOREACH(auto& plane, desc.planes)
+		for (auto& plane : desc.planes)
 		{
 			auto buf = spl::make_shared<buffer>(plane.size);
 			buffers.push_back(array<std::uint8_t>(buf->data(), plane.size, true, buf));
@@ -379,7 +373,7 @@ image_mixer::~image_mixer(){}
 void image_mixer::push(const core::frame_transform& transform){impl_->push(transform);}
 void image_mixer::visit(const core::const_frame& frame){impl_->visit(frame);}
 void image_mixer::pop(){impl_->pop();}
-boost::unique_future<array<const std::uint8_t>> image_mixer::operator()(const core::video_format_desc& format_desc){return impl_->render(format_desc);}
+std::future<array<const std::uint8_t>> image_mixer::operator()(const core::video_format_desc& format_desc){return impl_->render(format_desc);}
 void image_mixer::begin_layer(core::blend_mode blend_mode){impl_->begin_layer(blend_mode);}
 void image_mixer::end_layer(){impl_->end_layer();}
 core::mutable_frame image_mixer::create_frame(const void* tag, const core::pixel_format_desc& desc) {return impl_->create_frame(tag, desc);}

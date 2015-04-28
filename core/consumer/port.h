@@ -3,13 +3,13 @@
 #include "../monitor/monitor.h"
 
 #include <common/memory.h>
+#include <common/future_fwd.h>
 
 #include <boost/property_tree/ptree_fwd.hpp>
-#include <boost/thread/future.hpp>
 
 namespace caspar { namespace core {
 
-class port : public monitor::observable
+class port
 {
 	port(const port&);
 	port& operator=(const port&);
@@ -27,16 +27,14 @@ public:
 
 	port& operator=(port&& other);
 
-	boost::unique_future<bool> send(class const_frame frame);	
+	std::future<bool> send(class const_frame frame);	
 
-	// monitor::observable
-	
-	void subscribe(const monitor::observable::observer_ptr& o) override;
-	void unsubscribe(const monitor::observable::observer_ptr& o) override;
+	monitor::subject& monitor_output();
 
 	// Properties
 
 	void video_format_desc(const struct video_format_desc& format_desc);
+	std::wstring print() const;
 	int buffer_depth() const;
 	bool has_synchronization_clock() const;
 	boost::property_tree::wptree info() const;

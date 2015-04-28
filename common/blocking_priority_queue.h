@@ -26,7 +26,6 @@
 
 #include <tbb/concurrent_queue.h>
 
-#include <boost/foreach.hpp>
 #include <boost/thread/mutex.hpp>
 
 #include "semaphore.h"
@@ -46,26 +45,24 @@ class blocking_priority_queue
 public:
 	typedef unsigned int size_type;
 private:	
-	std::map<Prio, tbb::concurrent_queue<T>, std::greater<Prio>> queues_by_priority_;
-	semaphore space_available_;
-	semaphore elements_available_;
-	mutable boost::mutex capacity_mutex_;
-	size_type capacity_;
+	std::map<Prio, tbb::concurrent_queue<T>, std::greater<Prio>>	queues_by_priority_;
+	size_type														capacity_;
+	semaphore														space_available_	{ capacity_ };
+	semaphore														elements_available_	{ 0u };
+	mutable boost::mutex											capacity_mutex_;
 public:
 	/**
 	 * Constructor.
 	 *
 	 * @param capacity   The initial capacity of the queue.
-	 * @param priorities A forward iterable container with the priorities to 
+	 * @param priorities A forward iterable range with the priorities to 
 	 *                   support.
 	 */
 	template<class PrioList>
 	blocking_priority_queue(size_type capacity, const PrioList& priorities)
-		: space_available_(capacity)
-		, elements_available_(0u)
-		, capacity_(capacity)
+		: capacity_(capacity)
 	{
-		BOOST_FOREACH(Prio priority, priorities)
+		for (Prio priority : priorities)
 		{
 			queues_by_priority_.insert(std::make_pair(priority, tbb::concurrent_queue<T>()));
 		}
@@ -165,7 +162,7 @@ public:
 
 		acquire_transaction transaction(elements_available_, true);
 
-		BOOST_FOREACH(auto& queue, queues_by_priority_)
+		for (auto& queue : queues_by_priority_)
 		{
 			if (queue.first < minimum_priority)
 			{
@@ -192,7 +189,7 @@ public:
 	 */
 	void set_capacity(size_type capacity)
 	{
-		boost::mutex::scoped_lock lock (capacity_mutex_);
+		boost::unique_lock<boost::mutex> lock(capacity_mutex_);
 
 		if (capacity_ < capacity)
 		{
@@ -214,7 +211,7 @@ public:
 	 */
 	size_type capacity() const
 	{
-		boost::mutex::scoped_lock lock (capacity_mutex_);
+		boost::unique_lock<boost::mutex> lock (capacity_mutex_);
 
 		return capacity_;
 	}
@@ -226,6 +223,15 @@ public:
 	size_type size() const
 	{
 		return elements_available_.permits();
+	}
+
+	/**
+	 * @return the current available space in the queue (may have changed at
+	 *         the time of returning).
+	 */
+	size_type space_available() const
+	{
+		return space_available_.permits();
 	}
 private:
 	void push_acquired(Prio priority, const T& element, acquire_transaction& transaction)
@@ -245,7 +251,7 @@ private:
 
 	void pop_acquired_any_priority(T& element, acquire_transaction& transaction)
 	{
-		BOOST_FOREACH(auto& queue, queues_by_priority_)
+		for (auto& queue : queues_by_priority_)
 		{
 			if (queue.second.try_pop(element))
 			{

@@ -19,7 +19,7 @@
 * Author: Robert Nagy, ronag89@gmail.com
 */
 
-#include "../../stdafx.h"
+#include "../../StdAfx.h"
 
 #include "util.h"
 
@@ -44,6 +44,9 @@
 #include <common/assert.h>
 #include <boost/filesystem.hpp>
 #include <boost/lexical_cast.hpp>
+#include <boost/rational.hpp>
+
+#include <fstream>
 
 #include <asmlib.h>
 
@@ -100,7 +103,7 @@ core::pixel_format_desc pixel_format_desc(PixelFormat pix_fmt, int width, int he
 
 	core::pixel_format_desc desc = get_pixel_format(pix_fmt);
 		
-	switch(desc.format.value())
+	switch(desc.format)
 	{
 	case core::pixel_format::gray:
 	case core::pixel_format::luma:
@@ -264,7 +267,7 @@ spl::shared_ptr<AVFrame> make_av_frame(std::array<uint8_t*, 4> data, const core:
 	avcodec_get_frame_defaults(av_frame.get());
 	
 	auto planes		 = pix_desc.planes;
-	auto format		 = pix_desc.format.value();
+	auto format		 = pix_desc.format;
 
 	av_frame->width  = planes[0].width;
 	av_frame->height = planes[0].height;
@@ -394,9 +397,10 @@ double read_fps(AVFormatContext& context, double fail_value)
 		double fps = static_cast<double>(time_base.den) / static_cast<double>(time_base.num);
 
 		double closest_fps = 0.0;
-		for(int n = 0; n < core::video_format::count; ++n)
+
+		for (auto video_mode : enum_constants<core::video_format>())
 		{
-			auto format = core::video_format_desc(core::video_format(n));
+			auto format = core::video_format_desc(core::video_format(video_mode));
 
 			double diff1 = std::abs(format.fps - fps);
 			double diff2 = std::abs(closest_fps - fps);
@@ -491,10 +495,37 @@ std::wstring print_mode(int width, int height, double fps, bool interlaced)
 	return boost::lexical_cast<std::wstring>(width) + L"x" + boost::lexical_cast<std::wstring>(height) + (!interlaced ? L"p" : L"i") + fps_ss.str();
 }
 
-bool is_valid_file(const std::wstring filename)
+bool is_valid_file(const std::wstring& filename)
 {				
-	static const std::vector<std::wstring> invalid_exts = boost::assign::list_of(L".png")(L".tga")(L".bmp")(L".jpg")(L".jpeg")(L".gif")(L".tiff")(L".tif")(L".jp2")(L".jpx")(L".j2k")(L".j2c")(L".swf")(L".ct");
-	static std::vector<std::wstring>	   valid_exts   = boost::assign::list_of(L".m2t")(L".mov")(L".mp4")(L".dv")(L".flv")(L".mpg")(L".wav")(L".mp3")(L".dnxhd")(L".h264")(L".prores");
+	static const auto invalid_exts = {
+		L".png",
+		L".tga",
+		L".bmp",
+		L".jpg",
+		L".jpeg",
+		L".gif",
+		L".tiff",
+		L".tif",
+		L".jp2",
+		L".jpx",
+		L".j2k",
+		L".j2c",
+		L".swf",
+		L".ct"
+	};
+	static const auto valid_exts = {
+		L".m2t",
+		L".mov",
+		L".mp4",
+		L".dv",
+		L".flv",
+		L".mpg",
+		L".wav",
+		L".mp3",
+		L".dnxhd",
+		L".h264",
+		L".prores"
+	};
 
 	auto ext = boost::to_lower_copy(boost::filesystem::path(filename).extension().wstring());
 		
@@ -513,7 +544,7 @@ bool is_valid_file(const std::wstring filename)
 	if(av_probe_input_format2(&pb, false, &score) != nullptr)
 		return true;
 
-	std::ifstream file(filename);
+	std::ifstream file(u8filename);
 
 	std::vector<unsigned char> buf;
 	for(auto file_it = std::istreambuf_iterator<char>(file); file_it != std::istreambuf_iterator<char>() && buf.size() < 1024; ++file_it)
@@ -528,7 +559,35 @@ bool is_valid_file(const std::wstring filename)
 	return av_probe_input_format2(&pb, true, &score) != nullptr;
 }
 
-std::wstring probe_stem(const std::wstring stem)
+bool try_get_duration(const std::wstring filename, std::int64_t& duration, boost::rational<std::int64_t>& time_base)
+{
+	AVFormatContext* weak_context = nullptr;
+	if (avformat_open_input(&weak_context, u8(filename).c_str(), nullptr, nullptr) < 0)
+		return false;
+
+	std::shared_ptr<AVFormatContext> context(weak_context, av_close_input_file);
+
+	context->probesize = context->probesize / 10;
+	context->max_analyze_duration = context->probesize / 10;
+
+	if (avformat_find_stream_info(context.get(), nullptr) < 0)
+		return false;
+
+	const auto fps = read_fps(*context, 1.0);
+
+	const auto rational_fps = boost::rational<std::int64_t>(static_cast<int>(fps * AV_TIME_BASE), AV_TIME_BASE);
+
+	duration = boost::rational_cast<std::int64_t>(context->duration * rational_fps / AV_TIME_BASE);
+
+	if (rational_fps == 0)
+		return false;
+
+	time_base = 1 / rational_fps;
+
+	return true;
+}
+
+std::wstring probe_stem(const std::wstring& stem)
 {
 	auto stem2 = boost::filesystem::path(stem);
 	auto dir = stem2.parent_path();

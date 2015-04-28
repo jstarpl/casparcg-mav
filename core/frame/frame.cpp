@@ -19,15 +19,20 @@
 * Author: Robert Nagy, ronag89@gmail.com
 */
 
-#include "../stdafx.h"
+#include "../StdAfx.h"
 
 #include "frame.h"
 
 #include <common/except.h>
 #include <common/array.h>
+#include <common/future.h>
 
 #include <core/frame/frame_visitor.h>
 #include <core/frame/pixel_format.h>
+#include <core/frame/geometry.h>
+
+#include <cstdint>
+#include <vector>
 
 #include <boost/lexical_cast.hpp>
 #include <boost/thread/future.hpp>
@@ -40,6 +45,7 @@ struct mutable_frame::impl : boost::noncopyable
 	core::audio_buffer							audio_data_;
 	const core::pixel_format_desc				desc_;
 	const void*									tag_;
+	core::frame_geometry						geometry_		= frame_geometry::get_default();
 	
 	impl(std::vector<array<std::uint8_t>> buffers, audio_buffer audio_buffer, const void* tag, const core::pixel_format_desc& desc) 
 		: buffers_(std::move(buffers))
@@ -47,7 +53,7 @@ struct mutable_frame::impl : boost::noncopyable
 		, desc_(desc)
 		, tag_(tag)
 	{
-		BOOST_FOREACH(auto& buffer, buffers_)
+		for (auto& buffer : buffers_)
 			if(!buffer.data())
 				CASPAR_THROW_EXCEPTION(invalid_argument() << msg_info("mutable_frame: null argument"));
 	}
@@ -72,6 +78,8 @@ std::size_t mutable_frame::width() const{return impl_->desc_.planes.at(0).width;
 std::size_t mutable_frame::height() const{return impl_->desc_.planes.at(0).height;}						
 const void* mutable_frame::stream_tag()const{return impl_->tag_;}				
 const void* mutable_frame::data_tag()const{return impl_.get();}	
+const frame_geometry& mutable_frame::geometry() const { return impl_->geometry_; }
+void mutable_frame::set_geometry(const frame_geometry& g) { impl_->geometry_ = g; }
 
 const const_frame& const_frame::empty()
 {
@@ -82,24 +90,24 @@ const const_frame& const_frame::empty()
 
 struct const_frame::impl : boost::noncopyable
 {			
-	mutable std::vector<boost::shared_future<array<const std::uint8_t>>>	future_buffers_;
-	int											id_;
+	mutable std::vector<std::shared_future<array<const std::uint8_t>>>	future_buffers_;
 	core::audio_buffer							audio_data_;
 	const core::pixel_format_desc				desc_;
 	const void*									tag_;
+	core::frame_geometry						geometry_;
 
 	impl(const void* tag)
 		: desc_(core::pixel_format::invalid)
 		, tag_(tag)	
-		, id_(0)
+		, geometry_(frame_geometry::get_default())
 	{
 	}
 	
-	impl(boost::shared_future<array<const std::uint8_t>> image, audio_buffer audio_buffer, const void* tag, const core::pixel_format_desc& desc) 
+	impl(std::shared_future<array<const std::uint8_t>> image, audio_buffer audio_buffer, const void* tag, const core::pixel_format_desc& desc) 
 		: audio_data_(std::move(audio_buffer))
 		, desc_(desc)
 		, tag_(tag)
-		, id_(reinterpret_cast<int>(this))
+		, geometry_(frame_geometry::get_default())
 	{
 		if(desc.format != core::pixel_format::bgra)
 			CASPAR_THROW_EXCEPTION(not_implemented());
@@ -111,13 +119,11 @@ struct const_frame::impl : boost::noncopyable
 		: audio_data_(other.audio_data())
 		, desc_(other.pixel_format_desc())
 		, tag_(other.stream_tag())
-		, id_(reinterpret_cast<int>(this))
+		, geometry_(other.geometry())
 	{
 		for(std::size_t n = 0; n < desc_.planes.size(); ++n)
 		{
-			boost::promise<array<const std::uint8_t>> p;
-			p.set_value(std::move(other.image_data(n)));
-			future_buffers_.push_back(p.get_future());
+			future_buffers_.push_back(make_ready_future<array<const std::uint8_t>>(std::move(other.image_data(n))).share());
 		}
 	}
 
@@ -143,7 +149,7 @@ struct const_frame::impl : boost::noncopyable
 };
 	
 const_frame::const_frame(const void* tag) : impl_(new impl(tag)){}
-const_frame::const_frame(boost::shared_future<array<const std::uint8_t>> image, audio_buffer audio_buffer, const void* tag, const core::pixel_format_desc& desc) 
+const_frame::const_frame(std::shared_future<array<const std::uint8_t>> image, audio_buffer audio_buffer, const void* tag, const core::pixel_format_desc& desc) 
 	: impl_(new impl(std::move(image), std::move(audio_buffer), tag, desc)){}
 const_frame::const_frame(mutable_frame&& other) : impl_(new impl(std::move(other))){}
 const_frame::~const_frame(){}
@@ -171,5 +177,7 @@ std::size_t const_frame::height()const{return impl_->height();}
 std::size_t const_frame::size()const{return impl_->size();}						
 const void* const_frame::stream_tag()const{return impl_->tag_;}				
 const void* const_frame::data_tag()const{return impl_.get();}	
+const frame_geometry& const_frame::geometry() const { return impl_->geometry_; }
+void const_frame::set_geometry(const frame_geometry& g) { impl_->geometry_ = g; }
 
 }}

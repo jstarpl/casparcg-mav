@@ -1,57 +1,41 @@
 #pragma once
 
+#include <type_traits>
+
+#include <boost/range/irange.hpp>
+
+#include "linq.h"
+
+// Macro that defines & and &= for an enum class. Add more when needed.
+
+#define ENUM_ENABLE_BITWISE(enum_class) \
+	static enum_class operator&(enum_class lhs, enum_class rhs) \
+	{ \
+		return static_cast<enum_class>( \
+				static_cast<std::underlying_type<enum_class>::type>(lhs) \
+					& static_cast<std::underlying_type<enum_class>::type>(rhs)); \
+	}; \
+	static enum_class& operator&=(enum_class& lhs, enum_class rhs) \
+	{ \
+		lhs = lhs & rhs; \
+		return lhs; \
+	};
+
 namespace caspar {
 
-template<typename def, typename inner = typename def::type>
-class enum_class : public def
+// For enum classes starting at 0 and without any gaps with a terminating count constant.
+template <typename E>
+const std::vector<E>& enum_constants()
 {
-	typedef typename def::type type;
-	inner val_; 
-public: 
-	explicit enum_class(int v) : val_(static_cast<type>(v)) {}
-	enum_class(type v) : val_(v) {}
-	inner value() const { return val_; }
- 
-	bool operator==(const enum_class& s) const	{ return val_ == s.val_; }
-	bool operator!=(const enum_class& s) const	{ return val_ != s.val_; }
-	bool operator<(const enum_class& s) const	{ return val_ <  s.val_; }
-	bool operator<=(const enum_class& s) const	{ return val_ <= s.val_; }
-	bool operator>(const enum_class& s) const	{ return val_ >  s.val_; }
-	bool operator>=(const enum_class& s) const	{ return val_ >= s.val_; }
-		
-	bool operator==(const int& val) const	{ return val_ == val; }
-	bool operator!=(const int& val) const	{ return val_ != val; }
-	bool operator<(const int& val) const	{ return val_ <  val; }
-	bool operator<=(const int& val) const	{ return val_ <= val; }
-	bool operator>(const int& val) const	{ return val_ >  val; }
-	bool operator>=(const int& val) const	{ return val_ >= val; }
+	typedef typename std::underlying_type<E>::type integer;
 
-	enum_class operator&(const enum_class& s) const
-	{
-		return enum_class(static_cast<type>(val_ & s.val_));
-	}
+	static const auto ints = boost::irange(static_cast<integer>(0), static_cast<integer>(E::count));
+	static const auto result = cpplinq::from(ints.begin(), ints.end())
+		//.cast<E>()
+		.select([](int i) { return static_cast<E>(i); })
+		.to_vector();
 
-	enum_class& operator&=(const enum_class& s)
-	{
-		val_ = static_cast<type>(val_ & s.val_);
-		return *this;
-	}
-
-	enum_class operator|(const enum_class& s) const
-	{
-		return enum_class(static_cast<type>(val_ | s.val_));
-	}
-	
-	enum_class& operator|=(const enum_class& s)
-	{
-		val_ = static_cast<type>(val_ | s.val_);
-		return *this;
-	}
-
-	//operator inner()
-	//{
-	//	return val_;
-	//}
-};
+	return result;
+}
 
 }

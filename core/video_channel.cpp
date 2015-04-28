@@ -36,8 +36,10 @@
 #include <common/env.h>
 #include <common/lock.h>
 #include <common/executor.h>
+#include <common/timer.h>
 
 #include <core/mixer/image/image_mixer.h>
+#include <core/diagnostics/call_context.h>
 
 #include <tbb/spin_mutex.h>
 
@@ -47,40 +49,45 @@
 
 namespace caspar { namespace core {
 
-struct video_channel::impl sealed
+struct video_channel::impl final
 {
-	monitor::basic_subject							event_subject_;
+	spl::shared_ptr<monitor::subject>					monitor_subject_;
 
-	const int										index_;
+	const int											index_;
 
-	mutable tbb::spin_mutex							format_desc_mutex_;
-	core::video_format_desc							format_desc_;
+	mutable tbb::spin_mutex								format_desc_mutex_;
+	core::video_format_desc								format_desc_;
 	
-	const spl::shared_ptr<diagnostics::graph>		graph_;
+	const spl::shared_ptr<caspar::diagnostics::graph>	graph_				= [](int index)
+																			  {
+																				  core::diagnostics::scoped_call_context save;
+																				  core::diagnostics::call_context::for_thread().video_channel = index;
+																				  return spl::make_shared<caspar::diagnostics::graph>();
+																			  }(index_);
 
-	caspar::core::output							output_;
-	spl::shared_ptr<image_mixer>					image_mixer_;
-	caspar::core::mixer								mixer_;
-	caspar::core::stage								stage_;	
+	caspar::core::output								output_;
+	spl::shared_ptr<image_mixer>						image_mixer_;
+	caspar::core::mixer									mixer_;
+	caspar::core::stage									stage_;	
 
-	executor										executor_;
+	executor											executor_			{ L"video_channel" };
 public:
 	impl(int index, const core::video_format_desc& format_desc, std::unique_ptr<image_mixer> image_mixer)  
-		: event_subject_(monitor::path() % "channel" % index)
+		: monitor_subject_(spl::make_shared<monitor::subject>(
+				"/channel/" + boost::lexical_cast<std::string>(index)))
 		, index_(index)
 		, format_desc_(format_desc)
 		, output_(graph_, format_desc, index)
 		, image_mixer_(std::move(image_mixer))
 		, mixer_(graph_, image_mixer_)
 		, stage_(graph_)
-		, executor_(L"video_channel")
 	{
-		graph_->set_color("tick-time", diagnostics::color(0.0f, 0.6f, 0.9f));	
+		graph_->set_color("tick-time", caspar::diagnostics::color(0.0f, 0.6f, 0.9f));
 		graph_->set_text(print());
-		diagnostics::register_graph(graph_);
+		caspar::diagnostics::register_graph(graph_);
 		
-		output_.subscribe(event_subject_);
-		stage_.subscribe(event_subject_);
+		output_.monitor_output().attach_parent(monitor_subject_);
+		stage_.monitor_output().attach_parent(monitor_subject_);
 
 		executor_.begin_invoke([=]{tick();});
 
@@ -111,7 +118,7 @@ public:
 
 			auto format_desc = video_format_desc();
 			
-			boost::timer frame_timer;
+			caspar::timer frame_timer;
 
 			// Produce
 			
@@ -125,10 +132,11 @@ public:
 						
 			output_(std::move(mixed_frame), format_desc);
 		
-			graph_->set_value("tick-time", frame_timer.elapsed()*format_desc.fps*0.5);
+			auto frame_time = frame_timer.elapsed()*format_desc.fps*0.5;
+			graph_->set_value("tick-time", frame_time);
 
-			event_subject_	<< monitor::event("profiler/time")	% frame_timer.elapsed() % (1.0/format_desc_.fps)
-							<< monitor::event("format")			% format_desc.name;
+			*monitor_subject_	<< monitor::message("/profiler/time")	% frame_timer.elapsed() % (1.0/format_desc_.fps)
+								<< monitor::message("/format")			% format_desc.name;
 		}
 		catch(...)
 		{
@@ -141,6 +149,11 @@ public:
 	std::wstring print() const
 	{
 		return L"video_channel[" + boost::lexical_cast<std::wstring>(index_) + L"|" +  video_format_desc().name + L"]";
+	}
+
+	int index() const
+	{
+		return index_;
 	}
 
 	boost::property_tree::wptree info() const
@@ -171,8 +184,8 @@ output& video_channel::output() { return impl_->output_;}
 spl::shared_ptr<frame_factory> video_channel::frame_factory() { return impl_->image_mixer_;} 
 core::video_format_desc video_channel::video_format_desc() const{return impl_->video_format_desc();}
 void core::video_channel::video_format_desc(const core::video_format_desc& format_desc){impl_->video_format_desc(format_desc);}
-boost::property_tree::wptree video_channel::info() const{return impl_->info();}		
-void video_channel::subscribe(const monitor::observable::observer_ptr& o) {impl_->event_subject_.subscribe(o);}
-void video_channel::unsubscribe(const monitor::observable::observer_ptr& o) {impl_->event_subject_.unsubscribe(o);}
+boost::property_tree::wptree video_channel::info() const{return impl_->info();}
+int video_channel::index() const { return impl_->index(); }
+monitor::subject& video_channel::monitor_output(){ return *impl_->monitor_subject_; }
 
 }}

@@ -21,13 +21,11 @@
 
 #pragma once
 
-#include <string>
+#include <core/module_dependencies.h>
 
 namespace caspar { namespace image {
 
-void init();
+void init(core::module_dependencies dependencies);
 void uninit();
-
-std::wstring version();
 
 }}

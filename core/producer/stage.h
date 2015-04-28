@@ -24,6 +24,7 @@
 #include "frame_producer.h"
 
 #include "../monitor/monitor.h"
+#include "../interaction/interaction_sink.h"
 
 #include <common/forward.h>
 #include <common/future_fwd.h>
@@ -42,9 +43,9 @@ FORWARD2(caspar, diagnostics, class graph);
 
 namespace caspar { namespace core {
 
-typedef reactive::observable<std::map<int, class draw_frame>> frame_observable;
+//typedef reactive::observable<std::map<int, class draw_frame>> frame_observable;
 	
-class stage sealed : public monitor::observable, public frame_observable
+class stage final : public interaction_sink
 {
 	stage(const stage&);
 	stage& operator=(const stage&);
@@ -63,38 +64,38 @@ public:
 
 	std::map<int, class draw_frame> operator()(const struct video_format_desc& format_desc);
 
-	boost::unique_future<void>			apply_transforms(const std::vector<transform_tuple_t>& transforms);
-	boost::unique_future<void>			apply_transform(int index, const transform_func_t& transform, unsigned int mix_duration = 0, const tweener& tween = L"linear");
-	boost::unique_future<void>			clear_transforms(int index);
-	boost::unique_future<void>			clear_transforms();				
-	boost::unique_future<void>			load(int index, const spl::shared_ptr<class frame_producer>& producer, bool preview = false, const boost::optional<int32_t>& auto_play_delta = nullptr);
-	boost::unique_future<void>			pause(int index);
-	boost::unique_future<void>			play(int index);
-	boost::unique_future<void>			stop(int index);
-	boost::unique_future<std::wstring>	call(int index, const std::wstring& params);
-	boost::unique_future<void>			clear(int index);
-	boost::unique_future<void>			clear();	
-	boost::unique_future<void>			swap_layers(stage& other);
-	boost::unique_future<void>			swap_layer(int index, int other_index);
-	boost::unique_future<void>			swap_layer(int index, int other_index, stage& other);	
+	std::future<void>			apply_transforms(const std::vector<transform_tuple_t>& transforms);
+	std::future<void>			apply_transform(int index, const transform_func_t& transform, unsigned int mix_duration = 0, const tweener& tween = L"linear");
+	std::future<void>			clear_transforms(int index);
+	std::future<void>			clear_transforms();
+	std::future<void>			load(int index, const spl::shared_ptr<class frame_producer>& producer, bool preview = false, const boost::optional<int32_t>& auto_play_delta = nullptr);
+	std::future<void>			pause(int index);
+	std::future<void>			play(int index);
+	std::future<void>			stop(int index);
+	std::future<std::wstring>	call(int index, const std::vector<std::wstring>& params);
+	std::future<void>			clear(int index);
+	std::future<void>			clear();
+	std::future<void>			swap_layers(stage& other);
+	std::future<void>			swap_layer(int index, int other_index);
+	std::future<void>			swap_layer(int index, int other_index, stage& other);
 
-	// monitor::observable
+	monitor::subject& monitor_output();	
 
-	void subscribe(const monitor::observable::observer_ptr& o) override;
-	void unsubscribe(const monitor::observable::observer_ptr& o) override;
-	
 	// frame_observable
+	//void subscribe(const frame_observable::observer_ptr& o) override;
+	//void unsubscribe(const frame_observable::observer_ptr& o) override;
 
-	void subscribe(const frame_observable::observer_ptr& o) override;
-	void unsubscribe(const frame_observable::observer_ptr& o) override;
+	// interaction_sink
+
+	void on_interaction(const interaction_event::ptr& event) override;
 
 	// Properties
 
-	boost::unique_future<spl::shared_ptr<class frame_producer>>	foreground(int index);
-	boost::unique_future<spl::shared_ptr<class frame_producer>>	background(int index);
+	std::future<std::shared_ptr<class frame_producer>>	foreground(int index);
+	std::future<std::shared_ptr<class frame_producer>>	background(int index);
 
-	boost::unique_future<boost::property_tree::wptree>			info() const;
-	boost::unique_future<boost::property_tree::wptree>			info(int index) const;
+	std::future<boost::property_tree::wptree>			info() const;
+	std::future<boost::property_tree::wptree>			info(int index) const;
 
 private:
 	struct impl;

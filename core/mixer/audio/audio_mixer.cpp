@@ -19,13 +19,14 @@
 * Author: Robert Nagy, ronag89@gmail.com
 */
 
-#include "../../stdafx.h"
+#include "../../StdAfx.h"
 
 #include "audio_mixer.h"
 
 #include <core/frame/frame.h>
 #include <core/frame/frame_transform.h>
 #include <common/diagnostics/graph.h>
+#include <common/linq.h>
 
 #include <boost/range/adaptors.hpp>
 #include <boost/range/distance.hpp>
@@ -38,7 +39,7 @@ namespace caspar { namespace core {
 
 struct audio_item
 {
-	const void*			tag;
+	const void*			tag			= nullptr;
 	audio_transform		transform;
 	audio_buffer		audio_data;
 
@@ -54,18 +55,13 @@ struct audio_item
 	}
 };
 
-typedef std::vector<float, tbb::cache_aligned_allocator<float>> audio_buffer_ps;
+typedef cache_aligned_vector<float> audio_buffer_ps;
 	
 struct audio_stream
 {
 	audio_transform		prev_transform;
 	audio_buffer_ps		audio_data;
-	bool				is_still;
-
-	audio_stream() 
-		: is_still(false)
-	{
-	}
+	bool				is_still		= false;
 };
 
 struct audio_mixer::impl : boost::noncopyable
@@ -75,7 +71,8 @@ struct audio_mixer::impl : boost::noncopyable
 	std::vector<audio_item>				items_;
 	std::vector<int>					audio_cadence_;
 	video_format_desc					format_desc_;
-	
+	float								master_volume_			= 1.0f;
+	float								previous_master_volume_	= master_volume_;
 public:
 	impl()
 	{
@@ -112,7 +109,12 @@ public:
 	{
 		transform_stack_.pop();
 	}
-	
+
+	void set_master_volume(float volume)
+	{
+		master_volume_ = volume;
+	}
+
 	audio_buffer mix(const video_format_desc& format_desc)
 	{	
 		if(format_desc_ != format_desc)
@@ -125,7 +127,7 @@ public:
 		std::map<const void*, audio_stream>	next_audio_streams;
 		std::vector<const void*> used_tags;
 
-		BOOST_FOREACH(auto& item, items_)
+		for (auto& item : items_)
 		{			
 			audio_buffer_ps next_audio;
 
@@ -150,29 +152,44 @@ public:
 			if(it == audio_streams_.end() && item.audio_data.empty()) 
 				continue;
 						
-			const float prev_volume = static_cast<float>(prev_transform.volume);
-			const float next_volume = static_cast<float>(next_transform.volume);
-						
+			const float prev_volume = static_cast<float>(prev_transform.volume) * previous_master_volume_;
+			const float next_volume = static_cast<float>(next_transform.volume) * master_volume_;
+
 			// TODO: Move volume mixing into code below, in order to support audio sample counts not corresponding to frame audio samples.
 			auto alpha = (next_volume-prev_volume)/static_cast<float>(item.audio_data.size()/format_desc.audio_channels);
 			
 			for(size_t n = 0; n < item.audio_data.size(); ++n)
-				next_audio.push_back(item.audio_data[n] * (prev_volume + (n/format_desc_.audio_channels) * alpha));
+			{
+				auto sample_multiplier = (prev_volume + (n/format_desc_.audio_channels) * alpha);
+				next_audio.push_back(item.audio_data[n] * sample_multiplier);
+			} 
 										
 			next_audio_streams[tag].prev_transform  = std::move(next_transform); // Store all active tags, inactive tags will be removed at the end.
 			next_audio_streams[tag].audio_data		= std::move(next_audio);	
 			next_audio_streams[tag].is_still		= item.transform.is_still;
 		}				
 
+		previous_master_volume_ = master_volume_;
 		items_.clear();
 
 		audio_streams_ = std::move(next_audio_streams);
 		
 		if(audio_streams_.empty())		
-			audio_streams_[nullptr].audio_data = audio_buffer_ps(audio_cadence_.front(), 0.0f);
+			audio_streams_[nullptr].audio_data = audio_buffer_ps(audio_size(audio_cadence_.front()), 0.0f);
+
+		{ // sanity check
+
+			auto nb_invalid_streams = cpplinq::from(audio_streams_)
+				.select(values())
+				.where([&](const audio_stream& x) { return x.audio_data.size() < audio_size(audio_cadence_.front()); })
+				.count();
+
+			if(nb_invalid_streams > 0)		
+				CASPAR_LOG(trace) << "[audio_mixer] Incorrect frame audio cadence detected.";			
+		}
 				
-		std::vector<float> result_ps(audio_cadence_.front(), 0.0f);
-		BOOST_FOREACH(auto& stream, audio_streams_ | boost::adaptors::map_values)
+		std::vector<float> result_ps(audio_size(audio_cadence_.front()), 0.0f);
+		for (auto& stream : audio_streams_ | boost::adaptors::map_values)
 		{
 			if(stream.audio_data.size() < result_ps.size())
 				stream.audio_data.resize(result_ps.size(), 0.0f);
@@ -189,12 +206,18 @@ public:
 		
 		return result;
 	}
+
+	size_t audio_size(size_t num_samples) const
+	{
+		return num_samples * format_desc_.audio_channels;
+	}
 };
 
 audio_mixer::audio_mixer() : impl_(new impl()){}
 void audio_mixer::push(const frame_transform& transform){impl_->push(transform);}
 void audio_mixer::visit(const const_frame& frame){impl_->visit(frame);}
 void audio_mixer::pop(){impl_->pop();}
+void audio_mixer::set_master_volume(float volume) { impl_->set_master_volume(volume); }
 audio_buffer audio_mixer::operator()(const video_format_desc& format_desc){return impl_->mix(format_desc);}
 
 }}

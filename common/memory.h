@@ -113,8 +113,7 @@ public:
         p_.swap(other.p_); 
     } 
 	
-    template<class D, class T2> 
-    D* get_deleter(shared_ptr<T2> const& ptr) 
+    D& get_deleter()
     { 
         return p_.get_deleter(); 
     }
@@ -269,7 +268,7 @@ unique_ptr<T> const_pointer_cast(const unique_ptr<T2>& p)
 template <class T, class T2>
 unique_ptr<T> dynamic_pointer_cast(const unique_ptr<T2>& p)
 {
-    aT2to temp = std::dynamic_pointer_cast<T>(std::unique_ptr<T2>(p));
+    auto temp = std::dynamic_pointer_cast<T>(std::unique_ptr<T2>(p));
     if(!temp)
         throw std::bad_cast();
     return unique_ptr<T>(std::move(temp));
@@ -448,15 +447,15 @@ public:
     { 
         return p_.owner_before(ptr); 
     }
-
-    template<class D, class T2> 
-    D* get_deleter(shared_ptr<T2> const& ptr) 
-    { 
-        return p_.get_deleter(); 
-    }
 private:    
     std::shared_ptr<T> p_;
 };
+
+template<class D, class T>
+D* get_deleter(shared_ptr<T> const& ptr)
+{
+    return ptr.get_deleter();
+}
 
 template<class T, class T2>
 bool operator==(const shared_ptr<T>& a, const shared_ptr<T2>& b)
@@ -599,7 +598,7 @@ shared_ptr<T> const_pointer_cast(const shared_ptr<T2>& p)
 template <class T, class T2>
 shared_ptr<T> dynamic_pointer_cast(const shared_ptr<T2>& p)
 {
-    aT2to temp = std::dynamic_pointer_cast<T>(std::shared_ptr<T2>(p));
+    auto temp = std::dynamic_pointer_cast<T>(std::shared_ptr<T2>(p));
     if(!temp)
         throw std::bad_cast();
     return shared_ptr<T>(std::move(temp));

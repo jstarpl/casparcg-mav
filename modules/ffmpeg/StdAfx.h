@@ -21,7 +21,7 @@
 
 #pragma once
 
-#ifdef _DEBUG
+#if defined _DEBUG && defined _MSC_VER
 #include <crtdbg.h>
 #endif
 
@@ -30,14 +30,11 @@
 
 #include <algorithm>
 #include <array>
-#include <asmlib.h>
 #include <assert.h>
 #include <boost/algorithm/string.hpp>
 #include <boost/algorithm/string/case_conv.hpp>
 #include <boost/algorithm/string/predicate.hpp>
-#include <boost/assign.hpp>
 #include <boost/filesystem.hpp>
-#include <boost/foreach.hpp>
 #include <boost/lexical_cast.hpp>
 #include <boost/noncopyable.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -53,8 +50,6 @@
 #include <boost/thread/mutex.hpp>
 #include <boost/thread/once.hpp>
 #include <boost/thread/thread.hpp>
-#include <boost/timer.hpp>
-#include <crtdbg.h>
 #include <cstdint>
 #include <cstdio>
 #include <deque>
@@ -77,6 +72,7 @@
 #include <tbb/tbb_thread.h>
 #include <unordered_map>
 #include <vector>
+#include <common/timer.h>
 
 #pragma warning(push, 1)
 
@@ -89,7 +85,6 @@ extern "C"
 	#include <libavfilter/avfilter.h>
 	#include <libavfilter/avfiltergraph.h>
 	#include <libavfilter/buffersink.h>
-	#include <libavfilter/vsrc_buffer.h>
 	#include <libavformat/avformat.h>
 	#include <libavutil/avutil.h>
 	#include <libavutil/common.h>

@@ -19,32 +19,15 @@
 * Author: Robert Nagy, ronag89@gmail.com
 */
 
-#include "../stdafx.h"
+#include "../StdAfx.h"
 
 #include "frame_transform.h"
 
 #include <boost/range/algorithm/equal.hpp>
-#include <boost/range/algorithm/fill.hpp>
 
 namespace caspar { namespace core {
 		
 // image_transform
-
-image_transform::image_transform() 
-	: opacity(1.0)
-	, brightness(1.0)
-	, contrast(1.0)
-	, saturation(1.0)
-	, field_mode(field_mode::progressive)
-	, is_key(false)
-	, is_mix(false)
-	, is_still(false)
-{
-	boost::range::fill(fill_translation, 0.0);
-	boost::range::fill(fill_scale, 1.0);
-	boost::range::fill(clip_translation, 0.0);
-	boost::range::fill(clip_scale, 1.0);
-}
 
 image_transform& image_transform::operator*=(const image_transform &other)
 {
@@ -65,7 +48,7 @@ image_transform& image_transform::operator*=(const image_transform &other)
 	levels.min_output		 = std::max(levels.min_output, other.levels.min_output);
 	levels.max_output		 = std::min(levels.max_output, other.levels.max_output);
 	levels.gamma			*= other.levels.gamma;
-	field_mode				 = static_cast<core::field_mode>(field_mode & other.field_mode);
+	field_mode				 = field_mode & other.field_mode;
 	is_key					|= other.is_key;
 	is_mix					|= other.is_mix;
 	is_still				|= other.is_still;
@@ -138,12 +121,6 @@ bool operator!=(const image_transform& lhs, const image_transform& rhs)
 }
 
 // audio_transform
-		
-audio_transform::audio_transform() 
-	: volume(1.0)
-	, is_still(false)
-{
-}
 
 audio_transform& audio_transform::operator*=(const audio_transform &other)
 {

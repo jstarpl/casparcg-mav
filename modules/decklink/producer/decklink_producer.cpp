@@ -19,11 +19,10 @@
 * Author: Robert Nagy, ronag89@gmail.com
 */
 
-#include "../stdafx.h"
+#include "../StdAfx.h"
 
 #include "decklink_producer.h"
 
-#include "../interop/DeckLinkAPI_h.h"
 #include "../util/util.h"
 
 #include "../../ffmpeg/producer/filter/filter.h"
@@ -36,6 +35,7 @@
 #include <common/except.h>
 #include <common/log.h>
 #include <common/param.h>
+#include <common/timer.h>
 
 #include <core/frame/frame.h>
 #include <core/frame/draw_frame.h>
@@ -47,9 +47,7 @@
 #include <tbb/concurrent_queue.h>
 
 #include <boost/algorithm/string.hpp>
-#include <boost/foreach.hpp>
 #include <boost/property_tree/ptree.hpp>
-#include <boost/timer.hpp>
 
 #if defined(_MSC_VER)
 #pragma warning (push)
@@ -65,15 +63,7 @@ extern "C"
 #pragma warning (pop)
 #endif
 
-#pragma warning(push)
-#pragma warning(disable : 4996)
-
-	#include <atlbase.h>
-
-	#include <atlcom.h>
-	#include <atlhost.h>
-
-#pragma warning(push)
+#include "../decklink_api.h"
 
 #include <functional>
 
@@ -81,47 +71,42 @@ namespace caspar { namespace decklink {
 		
 class decklink_producer : boost::noncopyable, public IDeckLinkInputCallback
 {	
-	monitor::basic_subject							event_subject_;
-	spl::shared_ptr<diagnostics::graph>				graph_;
-	boost::timer									tick_timer_;
-
-	CComPtr<IDeckLink>								decklink_;
-	CComQIPtr<IDeckLinkInput>						input_;
-	CComQIPtr<IDeckLinkAttributes >					attributes_;
-	
-	const std::wstring								model_name_;
 	const int										device_index_;
+	core::monitor::subject							monitor_subject_;
+	spl::shared_ptr<diagnostics::graph>				graph_;
+	caspar::timer									tick_timer_;
+
+	com_ptr<IDeckLink>								decklink_			= get_device(device_index_);
+	com_iface_ptr<IDeckLinkInput>					input_				= iface_cast<IDeckLinkInput>(decklink_);
+	com_iface_ptr<IDeckLinkAttributes>				attributes_			= iface_cast<IDeckLinkAttributes>(decklink_);
+	
+	const std::wstring								model_name_			= get_model_name(decklink_);
 	const std::wstring								filter_;
 	
-	std::vector<int>								audio_cadence_;
-	boost::circular_buffer<size_t>					sync_buffer_;
-	ffmpeg::frame_muxer								muxer_;
-			
-	spl::shared_ptr<core::frame_factory>			frame_factory_;
 	core::video_format_desc							in_format_desc_;
 	core::video_format_desc							out_format_desc_;
+	std::vector<int>								audio_cadence_		= out_format_desc_.audio_cadence;
+	boost::circular_buffer<size_t>					sync_buffer_		{ audio_cadence_.size() };
+	spl::shared_ptr<core::frame_factory>			frame_factory_;
+	ffmpeg::frame_muxer								muxer_				{ in_format_desc_.fps, frame_factory_, out_format_desc_, filter_ };
+			
+	core::constraints								constraints_		{ in_format_desc_.width, in_format_desc_.height };
 
 	tbb::concurrent_bounded_queue<core::draw_frame>	frame_buffer_;
 
 	std::exception_ptr								exception_;		
 
 public:
-	decklink_producer(const core::video_format_desc& in_format_desc, 
-					  int device_index, 
-					  const spl::shared_ptr<core::frame_factory>& frame_factory, 
-					  const core::video_format_desc& out_format_desc, 
-					  const std::wstring& filter)
-		: decklink_(get_device(device_index))
-		, input_(decklink_)
-		, attributes_(decklink_)
-		, model_name_(get_model_name(decklink_))
-		, device_index_(device_index)
+	decklink_producer(
+			const core::video_format_desc& in_format_desc, 
+			int device_index, 
+			const spl::shared_ptr<core::frame_factory>& frame_factory, 
+			const core::video_format_desc& out_format_desc, 
+			const std::wstring& filter)
+		: device_index_(device_index)
 		, filter_(filter)
 		, in_format_desc_(in_format_desc)
 		, out_format_desc_(out_format_desc)
-		, muxer_(in_format_desc.fps, frame_factory, out_format_desc, filter)
-		, audio_cadence_(out_format_desc.audio_cadence)
-		, sync_buffer_(out_format_desc.audio_cadence.size())
 		, frame_factory_(frame_factory)
 	{	
 		frame_buffer_.set_capacity(2);
@@ -169,6 +154,11 @@ public:
 		}
 	}
 
+	core::constraints& pixel_constraints()
+	{
+		return constraints_;
+	}
+
 	virtual HRESULT STDMETHODCALLTYPE	QueryInterface (REFIID, LPVOID*)	{return E_NOINTERFACE;}
 	virtual ULONG STDMETHODCALLTYPE		AddRef ()							{return 1;}
 	virtual ULONG STDMETHODCALLTYPE		Release ()							{return 1;}
@@ -188,7 +178,7 @@ public:
 			graph_->set_value("tick-time", tick_timer_.elapsed()*out_format_desc_.fps*0.5);
 			tick_timer_.restart();
 
-			boost::timer frame_timer;	
+			caspar::timer frame_timer;
 			
 			// Video
 
@@ -206,20 +196,19 @@ public:
 			video_frame->interlaced_frame	= in_format_desc_.field_mode != core::field_mode::progressive;
 			video_frame->top_field_first	= in_format_desc_.field_mode == core::field_mode::upper ? 1 : 0;
 				
-			event_subject_	<< monitor::event("file/name")				% model_name_
-							<< monitor::event("file/path")				% device_index_
-							<< monitor::event("file/video/width")		% video->GetWidth()
-							<< monitor::event("file/video/height")		% video->GetHeight()
-							<< monitor::event("file/video/field")		% u8(!video_frame->interlaced_frame ? "progressive" : (video_frame->top_field_first ? "upper" : "lower"))
-							<< monitor::event("file/audio/sample-rate")	% 48000
-							<< monitor::event("file/audio/channels")	% 2
-							<< monitor::event("file/audio/format")		% u8(av_get_sample_fmt_name(AV_SAMPLE_FMT_S32))
-							<< monitor::event("file/fps")				% in_format_desc_.fps;
+			monitor_subject_
+					<< core::monitor::message("/file/name")					% model_name_
+					<< core::monitor::message("/file/path")					% device_index_
+					<< core::monitor::message("/file/video/width")			% video->GetWidth()
+					<< core::monitor::message("/file/video/height")			% video->GetHeight()
+					<< core::monitor::message("/file/video/field")			% u8(!video_frame->interlaced_frame ? "progressive" : (video_frame->top_field_first ? "upper" : "lower"))
+					<< core::monitor::message("/file/audio/sample-rate")	% 48000
+					<< core::monitor::message("/file/audio/channels")		% 2
+					<< core::monitor::message("/file/audio/format")			% u8(av_get_sample_fmt_name(AV_SAMPLE_FMT_S32))
+					<< core::monitor::message("/file/fps")					% in_format_desc_.fps;
 
 			// Audio
 
-			std::shared_ptr<core::audio_buffer> audio_buffer;
-			
 			void* audio_bytes = nullptr;
 			if(FAILED(audio->GetBytes(&audio_bytes)) || !audio_bytes)
 				return S_OK;
@@ -234,7 +223,7 @@ public:
 			// Note: Uses 1 step rotated cadence for 1001 modes (1602, 1602, 1601, 1602, 1601)
 			// This cadence fills the audio mixer most optimally.
 
-			sync_buffer_.push_back(audio->GetSampleFrameCount()*out_format_desc_.audio_channels);		
+			sync_buffer_.push_back(audio->GetSampleFrameCount());		
 			if(!boost::range::equal(sync_buffer_, audio_cadence_))
 			{
 				CASPAR_LOG(trace) << print() << L" Syncing audio.";
@@ -266,10 +255,10 @@ public:
 			}
 			
 			graph_->set_value("frame-time", frame_timer.elapsed()*out_format_desc_.fps*0.5);	
-			event_subject_ << monitor::event("profiler/time") % frame_timer.elapsed() % out_format_desc_.fps;
+			monitor_subject_ << core::monitor::message("/profiler/time") % frame_timer.elapsed() % out_format_desc_.fps;
 
 			graph_->set_value("output-buffer", static_cast<float>(frame_buffer_.size())/static_cast<float>(frame_buffer_.capacity()));	
-			event_subject_ << monitor::event("buffer") % frame_buffer_.size() % frame_buffer_.capacity();
+			monitor_subject_ << core::monitor::message("/buffer") % frame_buffer_.size() % frame_buffer_.capacity();
 		}
 		catch(...)
 		{
@@ -297,14 +286,9 @@ public:
 		return model_name_ + L" [" + boost::lexical_cast<std::wstring>(device_index_) + L"|" + in_format_desc_.name + L"]";
 	}
 
-	void subscribe(const monitor::observable::observer_ptr& o)
+	core::monitor::subject& monitor_output()
 	{
-		event_subject_.subscribe(o);
-	}
-
-	void unsubscribe(const monitor::observable::observer_ptr& o)
-	{
-		event_subject_.unsubscribe(o);
+		return monitor_subject_;
 	}
 };
 	
@@ -324,7 +308,7 @@ public:
 	{
 		executor_.invoke([=]
 		{
-			CoInitialize(nullptr);
+			com_initialize();
 			producer_.reset(new decklink_producer(in_format_desc, device_index, frame_factory, out_format_desc, filter_str));
 		});
 	}
@@ -334,18 +318,13 @@ public:
 		executor_.invoke([=]
 		{
 			producer_.reset();
-			CoUninitialize();
+			com_uninitialize();
 		});
 	}
 
-	void subscribe(const monitor::observable::observer_ptr& o) override
+	core::monitor::subject& monitor_output()
 	{
-		producer_->subscribe(o);
-	}
-
-	void unsubscribe(const monitor::observable::observer_ptr& o) override
-	{
-		producer_->unsubscribe(o);
+		return producer_->monitor_output();
 	}
 	
 	// frame_producer
@@ -353,6 +332,11 @@ public:
 	core::draw_frame receive_impl() override
 	{		
 		return producer_->get_frame();
+	}
+
+	core::constraints& pixel_constraints() override
+	{
+		return producer_->pixel_constraints();
 	}
 			
 	uint32_t nb_frames() const override

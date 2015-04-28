@@ -23,11 +23,12 @@
 
 #include "../monitor/monitor.h"
 #include "../video_format.h"
+#include "../interaction/interaction_sink.h"
+#include "binding.h"
 
 #include <common/forward.h>
 #include <common/future_fwd.h>
 #include <common/memory.h>
-#include <common/enum_class.h>
 
 #include <cstdint>
 #include <limits>
@@ -41,9 +42,20 @@
 FORWARD1(caspar, class executor);
 
 namespace caspar { namespace core {
+
+class variable;
+
+struct constraints
+{
+	binding<double> width;
+	binding<double> height;
+
+	constraints(double width, double height);
+	constraints();
+};
 	
 // Interface
-class frame_producer : public monitor::observable
+class frame_producer : public interaction_sink
 {
 	frame_producer(const frame_producer&);
 	frame_producer& operator=(const frame_producer&);
@@ -61,12 +73,17 @@ public:
 	// Methods	
 
 	virtual class draw_frame					receive() = 0;
-	virtual boost::unique_future<std::wstring>	call(const std::wstring& params) = 0;
+	virtual std::future<std::wstring>			call(const std::vector<std::wstring>& params) = 0;
+	virtual variable&							get_variable(const std::wstring& name) = 0;
+	virtual const std::vector<std::wstring>&	get_variables() const = 0;
 	
 	// monitor::observable
 
-	virtual void subscribe(const monitor::observable::observer_ptr& o) = 0;
-	virtual void unsubscribe(const monitor::observable::observer_ptr& o) = 0;
+	virtual monitor::subject& monitor_output() = 0;
+
+	// interaction_sink
+	virtual void on_interaction(const interaction_event::ptr& event) override { }
+	virtual bool collides(double x, double y) const override { return false; }
 
 	// Properties
 	
@@ -78,6 +95,8 @@ public:
 	virtual uint32_t							nb_frames() const = 0;
 	virtual uint32_t							frame_number() const = 0;
 	virtual class draw_frame					last_frame() = 0;
+	virtual class draw_frame					create_thumbnail_frame() = 0;
+	virtual constraints&						pixel_constraints() = 0;
 	virtual void								leading_producer(const spl::shared_ptr<frame_producer>&) {}  
 };
 
@@ -89,7 +108,9 @@ public:
 
 	// Methods	
 
-	virtual boost::unique_future<std::wstring>	call(const std::wstring& params);
+	virtual std::future<std::wstring>			call(const std::vector<std::wstring>& params) override;
+	virtual variable&							get_variable(const std::wstring& name) override;
+	virtual const std::vector<std::wstring>&	get_variables() const override;
 	
 	// monitor::observable
 	
@@ -99,6 +120,7 @@ public:
 	uint32_t					nb_frames() const override;
 	uint32_t					frame_number() const override;
 	virtual class draw_frame	last_frame() override;
+	virtual class draw_frame	create_thumbnail_frame() override;
 
 private:
 	virtual class draw_frame	receive() override;
@@ -111,10 +133,12 @@ private:
 
 typedef std::function<spl::shared_ptr<core::frame_producer>(const spl::shared_ptr<class frame_factory>&, const video_format_desc& format_desc, const std::vector<std::wstring>&)> producer_factory_t;
 void register_producer_factory(const producer_factory_t& factory); // Not thread-safe.
+void register_thumbnail_producer_factory(const producer_factory_t& factory); // Not thread-safe.
 
 spl::shared_ptr<core::frame_producer> create_producer(const spl::shared_ptr<frame_factory>&, const video_format_desc& format_desc, const std::vector<std::wstring>& params);
 spl::shared_ptr<core::frame_producer> create_producer(const spl::shared_ptr<frame_factory>&, const video_format_desc& format_desc, const std::wstring& params);
 
 spl::shared_ptr<core::frame_producer> create_destroy_proxy(spl::shared_ptr<core::frame_producer> producer);
-		
+spl::shared_ptr<core::frame_producer> create_thumbnail_producer(const spl::shared_ptr<frame_factory>&, const video_format_desc& format_desc, const std::wstring& media_file);
+
 }}

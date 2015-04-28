@@ -22,16 +22,11 @@
 #pragma once
 
 #include <string>
+#include <core/module_dependencies.h>
 
 namespace caspar { namespace ffmpeg {
 
-void init();
+void init(core::module_dependencies dependencies);
 void uninit();
-
-std::wstring avcodec_version();
-std::wstring avformat_version();
-std::wstring avutil_version();
-std::wstring avfilter_version();
-std::wstring swscale_version();
 
 }}

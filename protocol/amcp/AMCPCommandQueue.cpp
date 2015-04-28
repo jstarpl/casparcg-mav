@@ -19,11 +19,11 @@
 * Author: Nicklas P Andersson
 */
 
-#include "..\stdafx.h"
+#include "../StdAfx.h"
 
 #include "AMCPCommandQueue.h"
 
-#include <boost/timer.hpp>
+#include <common/timer.h>
 
 namespace caspar { namespace protocol { namespace amcp {
 	
@@ -36,7 +36,7 @@ AMCPCommandQueue::~AMCPCommandQueue()
 {
 }
 
-void AMCPCommandQueue::AddCommand(AMCPCommandPtr pCurrentCommand)
+void AMCPCommandQueue::AddCommand(AMCPCommand::ptr_type pCurrentCommand)
 {
 	if(!pCurrentCommand)
 		return;
@@ -62,7 +62,7 @@ void AMCPCommandQueue::AddCommand(AMCPCommandPtr pCurrentCommand)
 		{
 			try
 			{
-				boost::timer timer;
+				caspar::timer timer;
 				if(pCurrentCommand->Execute()) 
 					CASPAR_LOG(debug) << "Executed command: " << pCurrentCommand->print() << " " << timer.elapsed();
 				else 

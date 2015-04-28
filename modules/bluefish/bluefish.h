@@ -21,14 +21,10 @@
 
 #pragma once
 
-#include <string>
-#include <vector>
+#include <core/module_dependencies.h>
 
 namespace caspar { namespace bluefish {
 
-void init();
-
-std::wstring version();
-std::vector<std::wstring> device_list();
+void init(core::module_dependencies dependencies);
 
 }}

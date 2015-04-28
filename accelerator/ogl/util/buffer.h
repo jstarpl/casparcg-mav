@@ -22,13 +22,12 @@
 #pragma once
 
 #include <common/memory.h>
-#include <common/enum_class.h>
 
 #include <cstdint>
 
 namespace caspar { namespace accelerator { namespace ogl {
 			
-class buffer sealed
+class buffer final
 {
 	buffer(const buffer&);
 	buffer& operator=(const buffer&);
@@ -36,15 +35,11 @@ public:
 
 	// Static Members
 
-	struct usage_def
+	enum class usage
 	{
-		enum type
-		{
-			write_only,
-			read_only
-		};
+		write_only,
+		read_only
 	};
-	typedef enum_class<usage_def> usage;
 	
 	// Constructors
 

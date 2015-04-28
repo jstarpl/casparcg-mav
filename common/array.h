@@ -8,10 +8,12 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "assert.h"
+
 namespace caspar {
 	
 template<typename T>
-class array sealed
+class array final
 {
 	array(const array<std::uint8_t>&);
 	array& operator=(const array<std::uint8_t>&);
@@ -23,12 +25,12 @@ public:
 
 	// Constructors
 	
-	template<typename T>
-	explicit array(std::uint8_t* ptr, std::size_t size, bool cacheable, T&& storage)
+	template<typename T2>
+	explicit array(std::uint8_t* ptr, std::size_t size, bool cacheable, T2&& storage)
 		: ptr_(ptr)
 		, size_(size)
 		, cacheable_(cacheable)
-		, storage_(new boost::any(std::forward<T>(storage)))
+		, storage_(new boost::any(std::forward<T2>(storage)))
 	{
 	}
 
@@ -64,10 +66,10 @@ public:
 	bool empty() const			{return size() == 0;}
 	bool cacheable() const		{return cacheable_;}
 	
-	template<typename T>
-	T* storage() const
+	template<typename T2>
+	T2* storage() const
 	{
-		return boost::any_cast<T>(storage_.get());
+		return boost::any_cast<T2>(storage_.get());
 	}
 private:
 	T*			ptr_;
@@ -77,23 +79,32 @@ private:
 };
 
 template<typename T>
-class array<const T> sealed
+class array<const T> final
 {
 public:
 
 	// Static Members
 
 	// Constructors
+	array() = default; // Needed by std::future
 
-	template<typename T>
-	explicit array(const std::uint8_t* ptr, std::size_t size, bool cacheable, T&& storage)
+	template<typename T2>
+	explicit array(const std::uint8_t* ptr, std::size_t size, bool cacheable, T2&& storage)
 		: ptr_(ptr)
 		, size_(size)
 		, cacheable_(cacheable)
-		, storage_(new boost::any(std::forward<T>(storage)))
+		, storage_(new boost::any(std::forward<T2>(storage)))
 	{
 	}
-	
+
+	explicit array(const std::uint8_t* ptr, std::size_t size, bool cacheable)
+		: ptr_(ptr)
+		, size_(size)
+		, cacheable_(cacheable)
+		, storage_(new boost::any)
+	{
+	}
+
 	array(const array& other)
 		: ptr_(other.ptr_)
 		, size_(other.size_)
@@ -137,16 +148,16 @@ public:
 	bool empty() const			{return size() == 0;}
 	bool cacheable() const		{return cacheable_;}
 	
-	template<typename T>
-	T* storage() const
+	template<typename T2>
+	T2* storage() const
 	{
-		return boost::any_cast<T>(storage_.get());
+		return boost::any_cast<T2>(storage_.get());
 	}
 
 private:
-	const T*	ptr_;
-	std::size_t	size_;
-	bool		cacheable_;
+	const T*					ptr_		= nullptr;
+	std::size_t					size_		= 0;
+	bool						cacheable_	= false;
 	std::shared_ptr<boost::any>	storage_;
 };
 

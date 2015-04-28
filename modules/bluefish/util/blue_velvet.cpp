@@ -84,7 +84,7 @@ void blue_initialize()
 
 EVideoMode vid_fmt_from_video_format(const core::video_format& fmt) 
 {
-	switch(fmt.value())
+	switch(fmt)
 	{
 	case core::video_format::pal:			return VID_FMT_PAL;
 	case core::video_format::ntsc:			return VID_FMT_NTSC;
@@ -192,7 +192,7 @@ EVideoMode get_video_mode(CBlueVelvet4& blue, const core::video_format_desc& for
 
 spl::shared_ptr<CBlueVelvet4> create_blue()
 {
-	if(!BlueVelvetFactory4 || !encode_hanc_frame || !encode_hanc_frame)
+	if(!BlueVelvetFactory4 || !encode_hanc_frame)
 		CASPAR_THROW_EXCEPTION(caspar_exception() << msg_info("Bluefish drivers not found."));
 
 	return spl::shared_ptr<CBlueVelvet4>(BlueVelvetFactory4(), BlueVelvetDestroy);

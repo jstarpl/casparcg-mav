@@ -31,13 +31,25 @@
 
 #include <boost/thread.hpp>
 
+#include <future>
+#include <vector>
+#include <map>
+
 namespace caspar { namespace core {
 		
-std::vector<const consumer_factory_t> g_factories;
+std::vector<consumer_factory_t> g_consumer_factories;
+std::map<std::wstring, preconfigured_consumer_factory_t> g_preconfigured_consumer_factories;
 
 void register_consumer_factory(const consumer_factory_t& factory)
 {
-	g_factories.push_back(factory);
+	g_consumer_factories.push_back(factory);
+}
+
+void register_preconfigured_consumer_factory(
+		const std::wstring& element_name,
+		const preconfigured_consumer_factory_t& factory)
+{
+	g_preconfigured_consumer_factories.insert(std::make_pair(element_name, factory));
 }
 
 class destroy_consumer_proxy : public frame_consumer
@@ -77,7 +89,7 @@ public:
 		}).detach(); 
 	}
 	
-	boost::unique_future<bool> send(const_frame frame) override											{return consumer_->send(std::move(frame));}
+	std::future<bool> send(const_frame frame) override													{return consumer_->send(std::move(frame));}
 	virtual void initialize(const struct video_format_desc& format_desc, int channel_index)	override	{return consumer_->initialize(format_desc, channel_index);}
 	std::wstring print() const override																	{return consumer_->print();}	
 	std::wstring name() const override																	{return consumer_->name();}
@@ -85,8 +97,7 @@ public:
 	bool has_synchronization_clock() const override														{return consumer_->has_synchronization_clock();}
 	int buffer_depth() const override																	{return consumer_->buffer_depth();}
 	int index() const override																			{return consumer_->index();}
-	void subscribe(const monitor::observable::observer_ptr& o) override									{consumer_->subscribe(o);}
-	void unsubscribe(const monitor::observable::observer_ptr& o) override								{consumer_->unsubscribe(o);}			
+	monitor::subject& monitor_output() override															{return consumer_->monitor_output();}										
 };
 
 class print_consumer_proxy : public frame_consumer
@@ -107,22 +118,21 @@ public:
 		CASPAR_LOG(info) << str << L" Uninitialized.";
 	}
 	
-	boost::unique_future<bool> send(const_frame frame) override									{return consumer_->send(std::move(frame));}
+	std::future<bool> send(const_frame frame) override													{return consumer_->send(std::move(frame));}
 	virtual void initialize(const struct video_format_desc& format_desc, int channel_index)	override	{return consumer_->initialize(format_desc, channel_index);}
-	std::wstring print() const override															{return consumer_->print();}
-	std::wstring name() const override															{return consumer_->name();}
-	boost::property_tree::wptree info() const override 											{return consumer_->info();}
-	bool has_synchronization_clock() const override												{return consumer_->has_synchronization_clock();}
-	int buffer_depth() const override															{return consumer_->buffer_depth();}
-	int index() const override																	{return consumer_->index();}
-	void subscribe(const monitor::observable::observer_ptr& o) override									{consumer_->subscribe(o);}
-	void unsubscribe(const monitor::observable::observer_ptr& o) override								{consumer_->unsubscribe(o);}	
+	std::wstring print() const override																	{return consumer_->print();}
+	std::wstring name() const override																	{return consumer_->name();}
+	boost::property_tree::wptree info() const override 													{return consumer_->info();}
+	bool has_synchronization_clock() const override														{return consumer_->has_synchronization_clock();}
+	int buffer_depth() const override																	{return consumer_->buffer_depth();}
+	int index() const override																			{return consumer_->index();}
+	monitor::subject& monitor_output() override															{return consumer_->monitor_output();}										
 };
 
 class recover_consumer_proxy : public frame_consumer
 {	
 	std::shared_ptr<frame_consumer> consumer_;
-	int								channel_index_;
+	int								channel_index_	= -1;
 	video_format_desc				format_desc_;
 public:
 	recover_consumer_proxy(spl::shared_ptr<frame_consumer>&& consumer) 
@@ -130,7 +140,7 @@ public:
 	{
 	}
 	
-	virtual boost::unique_future<bool> send(const_frame frame)					
+	virtual std::future<bool> send(const_frame frame)					
 	{
 		try
 		{
@@ -148,7 +158,7 @@ public:
 			{
 				CASPAR_LOG_CURRENT_EXCEPTION();
 				CASPAR_LOG(error) << print() << " Failed to recover consumer.";
-				return wrap_as_future(false);
+				return make_ready_future(false);
 			}
 		}
 	}
@@ -166,8 +176,7 @@ public:
 	bool has_synchronization_clock() const override							{return consumer_->has_synchronization_clock();}
 	int buffer_depth() const override										{return consumer_->buffer_depth();}
 	int index() const override												{return consumer_->index();}
-	void subscribe(const monitor::observable::observer_ptr& o) override		{consumer_->subscribe(o);}
-	void unsubscribe(const monitor::observable::observer_ptr& o) override	{consumer_->unsubscribe(o);}	
+	monitor::subject& monitor_output() override								{return consumer_->monitor_output();}										
 };
 
 // This class is used to guarantee that audio cadence is correct. This is important for NTSC audio.
@@ -175,6 +184,7 @@ class cadence_guard : public frame_consumer
 {
 	spl::shared_ptr<frame_consumer>		consumer_;
 	std::vector<int>					audio_cadence_;
+	video_format_desc					format_desc_;
 	boost::circular_buffer<std::size_t>	sync_buffer_;
 public:
 	cadence_guard(const spl::shared_ptr<frame_consumer>& consumer)
@@ -186,17 +196,18 @@ public:
 	{
 		audio_cadence_	= format_desc.audio_cadence;
 		sync_buffer_	= boost::circular_buffer<std::size_t>(format_desc.audio_cadence.size());
+		format_desc_	= format_desc;
 		consumer_->initialize(format_desc, channel_index);
 	}
 
-	boost::unique_future<bool> send(const_frame frame) override
+	std::future<bool> send(const_frame frame) override
 	{		
 		if(audio_cadence_.size() == 1)
 			return consumer_->send(frame);
 
-		boost::unique_future<bool> result = wrap_as_future(true);
+		std::future<bool> result = make_ready_future(true);
 		
-		if(boost::range::equal(sync_buffer_, audio_cadence_) && audio_cadence_.front() == static_cast<int>(frame.audio_data().size())) 
+		if(boost::range::equal(sync_buffer_, audio_cadence_) && audio_cadence_.front() * format_desc_.audio_channels == static_cast<int>(frame.audio_data().size())) 
 		{	
 			// Audio sent so far is in sync, now we can send the next chunk.
 			result = consumer_->send(frame);
@@ -205,7 +216,7 @@ public:
 		else
 			CASPAR_LOG(trace) << print() << L" Syncing audio.";
 
-		sync_buffer_.push_back(static_cast<int>(frame.audio_data().size()));
+		sync_buffer_.push_back(static_cast<int>(frame.audio_data().size() / format_desc_.audio_channels));
 		
 		return std::move(result);
 	}
@@ -216,21 +227,21 @@ public:
 	bool has_synchronization_clock() const override							{return consumer_->has_synchronization_clock();}
 	int buffer_depth() const override										{return consumer_->buffer_depth();}
 	int index() const override												{return consumer_->index();}
-	void subscribe(const monitor::observable::observer_ptr& o) override		{consumer_->subscribe(o);}
-	void unsubscribe(const monitor::observable::observer_ptr& o) override	{consumer_->unsubscribe(o);}	
+	monitor::subject& monitor_output() override								{return consumer_->monitor_output();}										
 };
 
-spl::shared_ptr<core::frame_consumer> create_consumer(const std::vector<std::wstring>& params)
+spl::shared_ptr<core::frame_consumer> create_consumer(
+		const std::vector<std::wstring>& params, interaction_sink* sink)
 {
 	if(params.empty())
 		CASPAR_THROW_EXCEPTION(invalid_argument() << arg_name_info("params") << arg_value_info(""));
 	
 	auto consumer = frame_consumer::empty();
-	std::any_of(g_factories.begin(), g_factories.end(), [&](const consumer_factory_t& factory) -> bool
+	std::any_of(g_consumer_factories.begin(), g_consumer_factories.end(), [&](const consumer_factory_t& factory) -> bool
 		{
 			try
 			{
-				consumer = factory(params);
+				consumer = factory(params, sink);
 			}
 			catch(...)
 			{
@@ -249,20 +260,37 @@ spl::shared_ptr<core::frame_consumer> create_consumer(const std::vector<std::wst
 			   std::move(consumer)))));
 }
 
+spl::shared_ptr<frame_consumer> create_consumer(
+		const std::wstring& element_name,
+		const boost::property_tree::wptree& element,
+		interaction_sink* sink)
+{
+	auto found = g_preconfigured_consumer_factories.find(element_name);
+
+	if (found == g_preconfigured_consumer_factories.end())
+		CASPAR_THROW_EXCEPTION(file_not_found()
+			<< msg_info(L"No consumer factory registered for element name " + element_name));
+
+	return spl::make_shared<destroy_consumer_proxy>(
+			spl::make_shared<print_consumer_proxy>(
+					spl::make_shared<recover_consumer_proxy>(
+							spl::make_shared<cadence_guard>(
+									found->second(element, sink)))));
+}
+
 const spl::shared_ptr<frame_consumer>& frame_consumer::empty()
 {
 	class empty_frame_consumer : public frame_consumer
 	{
 	public:
-		boost::unique_future<bool> send(const_frame) override {return wrap_as_future(false);}
+		std::future<bool> send(const_frame) override { return make_ready_future(false); }
 		void initialize(const video_format_desc&, int) override{}
 		std::wstring print() const override {return L"empty";}
 		std::wstring name() const override {return L"empty";}
 		bool has_synchronization_clock() const override {return false;}
 		int buffer_depth() const override {return 0;};
 		virtual int index() const{return -1;}
-		void subscribe(const monitor::observable::observer_ptr& o) override{}
-		void unsubscribe(const monitor::observable::observer_ptr& o) override{}
+		monitor::subject& monitor_output() override {static monitor::subject monitor_subject(""); return monitor_subject;}										
 		boost::property_tree::wptree info() const override
 		{
 			boost::property_tree::wptree info;

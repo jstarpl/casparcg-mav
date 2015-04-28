@@ -21,13 +21,21 @@
 
 #include "StdAfx.h"
 
+#include "ffmpeg.h"
+
 #include "consumer/ffmpeg_consumer.h"
 #include "producer/ffmpeg_producer.h"
+#include "producer/util/util.h"
 
 #include <common/log.h>
 
 #include <core/consumer/frame_consumer.h>
 #include <core/producer/frame_producer.h>
+#include <core/producer/media_info/media_info.h>
+#include <core/producer/media_info/media_info_repository.h>
+#include <core/system_info_provider.h>
+
+#include <boost/property_tree/ptree.hpp>
 
 #include <tbb/recursive_mutex.h>
 
@@ -98,10 +106,10 @@ static void sanitize(uint8_t *line)
 void log_callback(void* ptr, int level, const char* fmt, va_list vl)
 {
     static int print_prefix=1;
-    static int count;
+    //static int count;
     static char prev[1024];
     char line[8192];
-    static int is_atty;
+    //static int is_atty;
     AVClass* avc= ptr ? *(AVClass**)ptr : NULL;
     if(level > av_log_get_level())
         return;
@@ -195,28 +203,6 @@ void log_callback(void* ptr, int level, const char* fmt, va_list vl)
 //}
 //#pragma warning (pop)
 
-void init()
-{
-	av_lockmgr_register(ffmpeg_lock_callback);
-	av_log_set_callback(log_callback);
-
-    avfilter_register_all();
-	//fix_yadif_filter_format_query();
-	av_register_all();
-    avformat_network_init();
-    avcodec_register_all();
-	
-	core::register_consumer_factory([](const std::vector<std::wstring>& params){return create_consumer(params);});
-	core::register_producer_factory(create_producer);
-}
-
-void uninit()
-{
-	avfilter_uninit();
-    avformat_network_deinit();
-	av_lockmgr_register(nullptr);
-}
-
 std::wstring make_version(unsigned int ver)
 {
 	std::wstringstream str;
@@ -247,6 +233,56 @@ std::wstring avfilter_version()
 std::wstring swscale_version()
 {
 	return make_version(::swscale_version());
+}
+
+void init(core::module_dependencies dependencies)
+{
+	av_lockmgr_register(ffmpeg_lock_callback);
+	av_log_set_callback(log_callback);
+
+    avfilter_register_all();
+	//fix_yadif_filter_format_query();
+	av_register_all();
+    avformat_network_init();
+    avcodec_register_all();
+	
+	core::register_consumer_factory(create_consumer);
+	core::register_preconfigured_consumer_factory(L"file", create_preconfigured_consumer);
+	core::register_producer_factory(create_producer);
+	
+	dependencies.media_info_repo->register_extractor(
+			[](const std::wstring& file, const std::wstring& extension, core::media_info& info) -> bool
+			{
+				// TODO: merge thumbnail generation from 2.0
+				//auto disable_logging = temporary_disable_logging_for_thread(true);
+				if (extension == L".WAV" || extension == L".MP3")
+				{
+					info.clip_type = L"AUDIO";
+					return true;
+				}
+
+				if (!is_valid_file(file))
+					return false;
+
+				info.clip_type = L"MOVIE";
+
+				return try_get_duration(file, info.duration, info.time_base);
+			});
+	dependencies.system_info_provider_repo->register_system_info_provider([](boost::property_tree::wptree& info)
+	{
+		info.add(L"system.ffmpeg.avcodec", avcodec_version());
+		info.add(L"system.ffmpeg.avformat", avformat_version());
+		info.add(L"system.ffmpeg.avfilter", avfilter_version());
+		info.add(L"system.ffmpeg.avutil", avutil_version());
+		info.add(L"system.ffmpeg.swscale", swscale_version());
+	});
+}
+
+void uninit()
+{
+	avfilter_uninit();
+    avformat_network_deinit();
+	av_lockmgr_register(nullptr);
 }
 
 }}

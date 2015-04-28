@@ -32,7 +32,8 @@
 #include <common/executor.h>
 #include <common/diagnostics/graph.h>
 #include <common/except.h>
-#include <common/gl/gl_check.h>
+#include <common/future.h>
+#include <common/timer.h>
 
 #include <core/frame/draw_frame.h>
 #include <core/frame/frame_factory.h>
@@ -40,10 +41,7 @@
 #include <core/frame/pixel_format.h>
 #include <core/video_format.h>
 
-#include <boost/foreach.hpp>
-#include <boost/timer.hpp>
 #include <boost/property_tree/ptree.hpp>
-#include <boost/range/algorithm_ext.hpp>
 
 #include <tbb/concurrent_queue.h>
 #include <tbb/spin_mutex.h>
@@ -61,27 +59,25 @@ struct mixer::impl : boost::noncopyable
 	
 	std::unordered_map<int, blend_mode>	blend_modes_;
 			
-	executor executor_;
+	executor executor_									{ L"mixer" };
 
 public:
 	impl(spl::shared_ptr<diagnostics::graph> graph, spl::shared_ptr<image_mixer> image_mixer) 
 		: graph_(std::move(graph))
-		, audio_mixer_()
 		, image_mixer_(std::move(image_mixer))
-		, executor_(L"mixer")
 	{			
-		graph_->set_color("mix-time", diagnostics::color(1.0f, 0.0f, 0.9f, 0.8));
+		graph_->set_color("mix-time", diagnostics::color(1.0f, 0.0f, 0.9f, 0.8f));
 	}	
 	
 	const_frame operator()(std::map<int, draw_frame> frames, const video_format_desc& format_desc)
 	{		
-		boost::timer frame_timer;
+		caspar::timer frame_timer;
 
 		auto frame = executor_.invoke([=]() mutable -> const_frame
 		{		
 			try
 			{	
-				BOOST_FOREACH(auto& frame, frames)
+				for (auto& frame : frames)
 				{
 					auto blend_it = blend_modes_.find(frame.first);
 					image_mixer_->begin_layer(blend_it != blend_modes_.end() ? blend_it->second : blend_mode::normal);
@@ -122,19 +118,44 @@ public:
 				it->second = value;
 		}, task_priority::high_priority);
 	}
-	
-	boost::unique_future<boost::property_tree::wptree> info() const
+
+	void clear_blend_mode(int index)
 	{
-		boost::promise<boost::property_tree::wptree> info;
-		info.set_value(boost::property_tree::wptree());
-		return info.get_future();
+		executor_.begin_invoke([=]
+		{
+			blend_modes_.erase(index);
+		}, task_priority::high_priority);
+	}
+
+	void clear_blend_modes()
+	{
+		executor_.begin_invoke([=]
+		{
+			blend_modes_.clear();
+		}, task_priority::high_priority);
+	}
+
+	void set_master_volume(float volume)
+	{
+		executor_.begin_invoke([=]
+		{
+			audio_mixer_.set_master_volume(volume);
+		}, task_priority::high_priority);
+	}
+
+	std::future<boost::property_tree::wptree> info() const
+	{
+		return make_ready_future(boost::property_tree::wptree());
 	}
 };
 	
 mixer::mixer(spl::shared_ptr<diagnostics::graph> graph, spl::shared_ptr<image_mixer> image_mixer) 
 	: impl_(new impl(std::move(graph), std::move(image_mixer))){}
 void mixer::set_blend_mode(int index, blend_mode value){impl_->set_blend_mode(index, value);}
-boost::unique_future<boost::property_tree::wptree> mixer::info() const{return impl_->info();}
+void mixer::clear_blend_mode(int index) { impl_->clear_blend_mode(index); }
+void mixer::clear_blend_modes() { impl_->clear_blend_modes(); }
+void mixer::set_master_volume(float volume) { impl_->set_master_volume(volume); }
+std::future<boost::property_tree::wptree> mixer::info() const{return impl_->info();}
 const_frame mixer::operator()(std::map<int, draw_frame> frames, const struct video_format_desc& format_desc){return (*impl_)(std::move(frames), format_desc);}
 mutable_frame mixer::create_frame(const void* tag, const core::pixel_format_desc& desc) {return impl_->image_mixer_->create_frame(tag, desc);}
 }}

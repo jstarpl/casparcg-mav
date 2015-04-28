@@ -25,9 +25,11 @@
 
 #include <string>
 
+#include <type_traits>
+
 namespace caspar { namespace accelerator { namespace ogl {
 		
-class shader sealed
+class shader final
 {
 	shader(const shader&);
 	shader& operator=(const shader&);
@@ -47,6 +49,16 @@ public:
 	void set(const std::string& name, float value);
 	void set(const std::string& name, float value0, float value1);
 	void set(const std::string& name, double value);
+
+	template<typename E>
+	typename std::enable_if<
+			std::is_enum<E>::value,
+			void
+		>::type set(const std::string& name, E value)
+	{
+		set(name, static_cast<typename std::underlying_type<E>::type>(value));
+	}
+
 	void use() const;
 
 	// Properties

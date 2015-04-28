@@ -33,13 +33,11 @@
 #	endif
 #endif
 
-#ifdef _DEBUG
+#if defined _DEBUG && defined _MSC_VER
 #include <crtdbg.h>
 #endif
 
 #include <cstdint>
-#include <winsock2.h>
-#include <tchar.h>
 #include <sstream>
 #include <memory>
 #include <functional>
@@ -48,18 +46,17 @@
 #include <deque>
 #include <queue>
 #include <string>
+#include <set>
 #include <math.h>
 
-#include <boost/assign.hpp>
 #include <boost/filesystem.hpp>
-#include <boost/foreach.hpp>
 #include <boost/range/algorithm.hpp>
 
-#include "../common/utf.h"
-#include "../common/memory.h"
+#include <common/utf.h>
+#include <common/memory.h>
 //#include "../common/executor.h" // Can't include this due to MSVC lambda bug
 
-#include "../common/log.h"
-#include "../common/except.h"
+#include <common/log.h>
+#include <common/except.h>
 
 #include <assert.h>

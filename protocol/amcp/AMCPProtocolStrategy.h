@@ -21,55 +21,42 @@
 
 #pragma once
 
-#include "../util/protocolstrategy.h"
-#include <core/video_channel.h>
+#include "../util/ProtocolStrategy.h"
 
-#include "AMCPCommand.h"
-#include "AMCPCommandQueue.h"
+#include <core/video_channel.h>
+#include <core/thumbnail_generator.h>
+#include <core/producer/media_info/media_info_repository.h>
+#include <core/producer/cg_proxy.h>
+#include <core/system_info_provider.h>
+
+#include <common/memory.h>
 
 #include <boost/noncopyable.hpp>
 
 #include <string>
+#include <future>
 
 namespace caspar { namespace protocol { namespace amcp {
 
 class AMCPProtocolStrategy : public IO::IProtocolStrategy, boost::noncopyable
 {
-	enum MessageParserState {
-		New = 0,
-		GetSwitch,
-		GetCommand,
-		GetParameters,
-		GetChannel,
-		Done
-	};
-
-	AMCPProtocolStrategy(const AMCPProtocolStrategy&);
-	AMCPProtocolStrategy& operator=(const AMCPProtocolStrategy&);
-
 public:
-	AMCPProtocolStrategy(const std::vector<spl::shared_ptr<core::video_channel>>& channels);
+	AMCPProtocolStrategy(
+			const std::vector<spl::shared_ptr<core::video_channel>>& channels,
+			const std::shared_ptr<core::thumbnail_generator>& thumb_gen,
+			const spl::shared_ptr<core::media_info_repository>& media_info_repo,
+			const spl::shared_ptr<core::system_info_provider_repository>& system_info_provider_repo,
+			const spl::shared_ptr<core::cg_producer_registry>& cg_registry,
+			std::promise<bool>& shutdown_server_now);
+
 	virtual ~AMCPProtocolStrategy();
 
-	virtual void Parse(const TCHAR* pData, int charCount, IO::ClientInfoPtr pClientInfo);
-	virtual std::string GetCodepage() {
-		return "UTF-8";
-	}
-
-	AMCPCommandPtr InterpretCommandString(const std::wstring& str, MessageParserState* pOutState=0);
+	virtual void Parse(const std::wstring& msg, IO::ClientInfoPtr pClientInfo);
+	virtual std::string GetCodepage() const { return "UTF-8"; }
 
 private:
-	friend class AMCPCommand;
-
-	void ProcessMessage(const std::wstring& message, IO::ClientInfoPtr& pClientInfo);
-	std::size_t TokenizeMessage(const std::wstring& message, std::vector<std::wstring>* pTokenVector);
-	AMCPCommandPtr CommandFactory(const std::wstring& str);
-
-	bool QueueCommand(AMCPCommandPtr);
-
-	std::vector<spl::shared_ptr<core::video_channel>> channels_;
-	std::vector<AMCPCommandQueuePtr> commandQueues_;
-	static const std::wstring MessageDelimiter;
+	struct impl;
+	spl::unique_ptr<impl> impl_;
 };
 
 }}}

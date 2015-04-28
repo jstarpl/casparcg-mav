@@ -19,7 +19,7 @@
 * Author: Robert Nagy, ronag89@gmail.com
 */
 
-#include "../../stdafx.h"
+#include "../../StdAfx.h"
 
 #include "image_kernel.h"
 
@@ -60,9 +60,9 @@ struct image_kernel::impl
 	spl::shared_ptr<shader>	shader_;
 	bool					blend_modes_;
 							
-	impl(const spl::shared_ptr<device>& ogl)
+	impl(const spl::shared_ptr<device>& ogl, bool blend_modes_wanted)
 		: ogl_(ogl)
-		, shader_(ogl_->invoke([&]{return get_image_shader(blend_modes_);}))
+		, shader_(ogl_->invoke([&]{return get_image_shader(ogl, blend_modes_, blend_modes_wanted); }))
 	{
 	}
 
@@ -84,10 +84,10 @@ struct image_kernel::impl
 			params.textures[n]->bind(n);
 
 		if(params.local_key)
-			params.local_key->bind(texture_id::local_key);
+			params.local_key->bind(static_cast<int>(texture_id::local_key));
 		
 		if(params.layer_key)
-			params.layer_key->bind(texture_id::layer_key);
+			params.layer_key->bind(static_cast<int>(texture_id::layer_key));
 			
 		// Setup shader
 								
@@ -97,7 +97,7 @@ struct image_kernel::impl
 		shader_->set("plane[1]",		texture_id::plane1);
 		shader_->set("plane[2]",		texture_id::plane2);
 		shader_->set("plane[3]",		texture_id::plane3);
-		for(int n = 0; n < params.textures.size(); ++n)
+		for (int n = 0; n < params.textures.size(); ++n)
 			shader_->set("plane_size[" + boost::lexical_cast<std::string>(n) + "]",	
 						 static_cast<float>(params.textures[n]->width()), 
 						 static_cast<float>(params.textures[n]->height()));
@@ -105,9 +105,9 @@ struct image_kernel::impl
 		shader_->set("local_key",		texture_id::local_key);
 		shader_->set("layer_key",		texture_id::layer_key);
 		shader_->set("is_hd",		 	params.pix_desc.planes.at(0).height > 700 ? 1 : 0);
-		shader_->set("has_local_key",	params.local_key);
-		shader_->set("has_layer_key",	params.layer_key);
-		shader_->set("pixel_format",	params.pix_desc.format.value());	
+		shader_->set("has_local_key",	static_cast<bool>(params.local_key));
+		shader_->set("has_layer_key",	static_cast<bool>(params.layer_key));
+		shader_->set("pixel_format",	params.pix_desc.format);
 		shader_->set("opacity",			params.transform.is_key ? 1.0 : params.transform.opacity);	
 				
 
@@ -118,17 +118,17 @@ struct image_kernel::impl
 
 		if(blend_modes_)
 		{
-			params.background->bind(texture_id::background);
+			params.background->bind(static_cast<int>(texture_id::background));
 
 			shader_->set("background",	texture_id::background);
-			shader_->set("blend_mode",	params.blend_mode.value());
-			shader_->set("keyer",		params.keyer.value());
+			shader_->set("blend_mode",	params.blend_mode);
+			shader_->set("keyer",		params.keyer);
 		}
 		else
 		{
 			GL(glEnable(GL_BLEND));
 
-			switch(params.keyer.value())
+			switch(params.keyer)
 			{
 			case keyer::additive:
 				GL(glBlendFunc(GL_ONE, GL_ONE));	
@@ -185,6 +185,7 @@ struct image_kernel::impl
 		// Setup drawing area
 		
 		GL(glViewport(0, 0, params.background->width(), params.background->height()));
+		glDisable(GL_DEPTH_TEST);
 										
 		auto m_p = params.transform.clip_translation;
 		auto m_s = params.transform.clip_scale;
@@ -215,24 +216,63 @@ struct image_kernel::impl
 
 		params.background->attach();
 		
-		// Draw
-				
-		glBegin(GL_QUADS);
-			glMultiTexCoord2d(GL_TEXTURE0, 0.0, 0.0); glMultiTexCoord2d(GL_TEXTURE1,  f_p[0]        ,  f_p[1]        );		glVertex2d( f_p[0]        *2.0-1.0,  f_p[1]        *2.0-1.0);
-			glMultiTexCoord2d(GL_TEXTURE0, 1.0, 0.0); glMultiTexCoord2d(GL_TEXTURE1, (f_p[0]+f_s[0]),  f_p[1]        );		glVertex2d((f_p[0]+f_s[0])*2.0-1.0,  f_p[1]        *2.0-1.0);
-			glMultiTexCoord2d(GL_TEXTURE0, 1.0, 1.0); glMultiTexCoord2d(GL_TEXTURE1, (f_p[0]+f_s[0]), (f_p[1]+f_s[1]));		glVertex2d((f_p[0]+f_s[0])*2.0-1.0, (f_p[1]+f_s[1])*2.0-1.0);
-			glMultiTexCoord2d(GL_TEXTURE0, 0.0, 1.0); glMultiTexCoord2d(GL_TEXTURE1,  f_p[0]        , (f_p[1]+f_s[1]));		glVertex2d( f_p[0]        *2.0-1.0, (f_p[1]+f_s[1])*2.0-1.0);
-		glEnd();
+		glMatrixMode(GL_MODELVIEW);
+		glPushMatrix();
+			glTranslated(f_p[0], f_p[1], 0.0);
+			glScaled(f_s[0], f_s[1], 1.0);
+
+			switch(params.geometry.type())
+			{
+			case core::frame_geometry::geometry_type::quad:
+				{
+					const std::vector<float>& data = params.geometry.data();
+					float v_left = data[0], v_top = data[1], t_left = data[2], t_top = data[3];
+					float v_right = data[4], v_bottom = data[5], t_right = data[6], t_bottom = data[7];
+
+					glBegin(GL_QUADS);
+						glMultiTexCoord2d(GL_TEXTURE0, t_left, t_top);		glVertex2d(v_left, v_top);
+						glMultiTexCoord2d(GL_TEXTURE0, t_right, t_top);		glVertex2d(v_right, v_top);
+						glMultiTexCoord2d(GL_TEXTURE0, t_right, t_bottom);	glVertex2d(v_right, v_bottom);
+						glMultiTexCoord2d(GL_TEXTURE0, t_left, t_bottom);	glVertex2d(v_left, v_bottom);
+					glEnd();
+				}
+				break;
+
+			case core::frame_geometry::geometry_type::quad_list:
+				{
+					glClientActiveTexture(GL_TEXTURE0);
+					
+					glDisableClientState(GL_EDGE_FLAG_ARRAY);
+					glDisableClientState(GL_COLOR_ARRAY);
+					glDisableClientState(GL_INDEX_ARRAY);
+					glDisableClientState(GL_NORMAL_ARRAY);
+
+					glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+					glEnableClientState(GL_VERTEX_ARRAY);
+					
+					glTexCoordPointer(2, GL_FLOAT, 4*sizeof(float), &(params.geometry.data().data()[2]));
+					glVertexPointer(2, GL_FLOAT, 4*sizeof(float), params.geometry.data().data());
+					
+					glDrawArrays(GL_QUADS, 0, (GLsizei)params.geometry.data().size()/4);	//each vertex is four floats.
+					
+					glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+					glDisableClientState(GL_VERTEX_ARRAY);
+				}
+				break;
+
+			default:
+				break;
+			}
+		glPopMatrix();
 		
 		// Cleanup
-		
 		GL(glDisable(GL_SCISSOR_TEST));
 		GL(glDisable(GL_POLYGON_STIPPLE));
 		GL(glDisable(GL_BLEND));
 	}
 };
 
-image_kernel::image_kernel(const spl::shared_ptr<device>& ogl) : impl_(new impl(ogl)){}
+image_kernel::image_kernel(const spl::shared_ptr<device>& ogl, bool blend_modes_wanted) : impl_(new impl(ogl, blend_modes_wanted)){}
 image_kernel::~image_kernel(){}
 void image_kernel::draw(const draw_params& params){impl_->draw(params);}
 bool image_kernel::has_blend_modes() const{return impl_->blend_modes_;}

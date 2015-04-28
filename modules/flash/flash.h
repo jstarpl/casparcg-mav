@@ -21,13 +21,10 @@
 
 #pragma once
 
-#include <string>
+#include <core/module_dependencies.h>
 
 namespace caspar { namespace flash {
 
-void init();
-
-std::wstring cg_version();
-std::wstring version();
+void init(core::module_dependencies dependencies);
 
 }}

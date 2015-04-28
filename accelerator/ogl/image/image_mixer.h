@@ -39,7 +39,7 @@ FORWARD2(caspar, core, struct frame_transform);
 
 namespace caspar { namespace accelerator { namespace ogl {
 	
-class image_mixer sealed : public core::image_mixer
+class image_mixer final : public core::image_mixer
 {
 	image_mixer(const image_mixer&);
 	image_mixer& operator=(const image_mixer&);
@@ -49,12 +49,12 @@ public:
 	
 	// Constructors
 
-	image_mixer(const spl::shared_ptr<class device>& ogl);
+	image_mixer(const spl::shared_ptr<class device>& ogl, bool blend_modes_wanted);
 	~image_mixer();
 
 	// Methods
 			
-	boost::unique_future<array<const std::uint8_t>> operator()(const core::video_format_desc& format_desc) override;		
+	std::future<array<const std::uint8_t>> operator()(const core::video_format_desc& format_desc) override;		
 	core::mutable_frame create_frame(const void* tag, const core::pixel_format_desc& desc) override;
 
 	// core::image_mixer

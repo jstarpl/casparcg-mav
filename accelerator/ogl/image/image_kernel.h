@@ -23,44 +23,34 @@
 
 #include <core/mixer/image/blend_modes.h>
 
-#include <common/enum_class.h>
 #include <common/memory.h>
 
 #include <core/frame/pixel_format.h>
 #include <core/frame/frame_transform.h>
+#include <core/frame/geometry.h>
 
 namespace caspar { namespace accelerator { namespace ogl {
 	
-struct keyer_def
+enum class keyer
 {
-	enum type
-	{
-		linear = 0,
-		additive,
-	};
+	linear = 0,
+	additive,
 };
-typedef enum_class<keyer_def> keyer;
 
-struct draw_params sealed
+struct draw_params final
 {
-	core::pixel_format_desc						pix_desc;
+	core::pixel_format_desc						pix_desc	= core::pixel_format::invalid;
 	std::vector<spl::shared_ptr<class texture>>	textures;
 	core::image_transform						transform;
-	core::blend_mode							blend_mode;
-	keyer										keyer;
+	core::frame_geometry						geometry;
+	core::blend_mode							blend_mode	= core::blend_mode::normal;
+	ogl::keyer									keyer		= ogl::keyer::linear;
 	std::shared_ptr<class texture>				background;
 	std::shared_ptr<class texture>				local_key;
 	std::shared_ptr<class texture>				layer_key;
-
-	draw_params() 
-		: pix_desc(core::pixel_format::invalid)
-		, blend_mode(core::blend_mode::normal)
-		, keyer(keyer::linear)
-	{
-	}
 };
 
-class image_kernel sealed
+class image_kernel final
 {
 	image_kernel(const image_kernel&);
 	image_kernel& operator=(const image_kernel&);
@@ -70,7 +60,7 @@ public:
 
 	// Constructors
 
-	image_kernel(const spl::shared_ptr<class device>& ogl);
+	image_kernel(const spl::shared_ptr<class device>& ogl, bool blend_modes_wanted);
 	~image_kernel();
 
 	// Methods

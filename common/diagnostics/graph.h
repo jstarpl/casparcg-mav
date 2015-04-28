@@ -25,6 +25,7 @@
 
 #include <string>
 #include <tuple>
+#include <functional>
 
 #include <boost/noncopyable.hpp>
 
@@ -42,12 +43,31 @@ public:
 	void set_value(const std::string& name, double value);
 	void set_color(const std::string& name, int color);
 	void set_tag(const std::string& name);
+	void auto_reset();
 private:
 	struct impl;
 	std::shared_ptr<impl> impl_;
 };
 
 void register_graph(const spl::shared_ptr<graph>& graph);
-void show_graphs(bool value);
+
+namespace spi {
+
+class graph_sink : boost::noncopyable
+{
+public:
+	virtual ~graph_sink() { }
+	virtual void activate() = 0;
+	virtual void set_text(const std::wstring& value) = 0;
+	virtual void set_value(const std::string& name, double value) = 0;
+	virtual void set_color(const std::string& name, int color) = 0;
+	virtual void set_tag(const std::string& name) = 0;
+	virtual void auto_reset() = 0;
+};
+
+typedef std::function<spl::shared_ptr<graph_sink>()> sink_factory_t;
+void register_sink_factory(sink_factory_t factory);
+
+}
 
 }}

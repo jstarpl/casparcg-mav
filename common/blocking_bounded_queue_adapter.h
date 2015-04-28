@@ -53,11 +53,11 @@ public:
 	typedef typename Q::value_type value_type;
 	typedef unsigned int size_type;
 private:
-	semaphore space_available_;
-	semaphore elements_available_;
-	Q queue_;
-	mutable boost::mutex capacity_mutex_;
-	size_type capacity_;
+	mutable	boost::mutex	capacity_mutex_;
+	size_type				capacity_;
+	semaphore				space_available_		= capacity_;
+	semaphore				elements_available_		= 0;
+	Q						queue_;
 public:
 	/**
 	 * Constructor.
@@ -65,9 +65,7 @@ public:
 	 * @param capacity The capacity of the queue.
 	 */
 	blocking_bounded_queue_adapter(size_type capacity)
-		: space_available_(capacity)
-		, elements_available_(0)
-		, capacity_(capacity)
+		: capacity_(capacity)
 	{
 	}
 
@@ -140,7 +138,7 @@ public:
 	 */
 	void set_capacity(size_type capacity)
 	{
-		boost::mutex::scoped_lock lock (capacity_mutex_);
+		boost::unique_lock<boost::mutex> lock (capacity_mutex_);
 
 		if (capacity_ < capacity)
 		{
@@ -164,7 +162,7 @@ public:
 	 */
 	size_type capacity() const
 	{
-		boost::mutex::scoped_lock lock (capacity_mutex_);
+		boost::unique_lock<boost::mutex> lock (capacity_mutex_);
 
 		return capacity_;
 	}

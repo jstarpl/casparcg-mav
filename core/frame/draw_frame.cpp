@@ -19,7 +19,7 @@
 * Author: Robert Nagy, ronag89@gmail.com
 */
 
-#include "../stdafx.h"
+#include "../StdAfx.h"
 
 #include "draw_frame.h"
 
@@ -27,11 +27,9 @@
 
 #include "frame_transform.h"
 
-#include <boost/foreach.hpp>
-
 namespace caspar { namespace core {
 		
-enum tags
+enum class tags
 {
 	frame_tag = 0,
 	empty_tag,
@@ -81,7 +79,7 @@ public:
 		}
 		else
 		{
-			BOOST_FOREACH(auto frame, frames_)
+			for (auto& frame : frames_)
 				frame.accept(visitor);
 		}
 		visitor.pop();

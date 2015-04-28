@@ -35,17 +35,12 @@
 #include <common/diagnostics/graph.h>
 #include <common/log.h>
 #include <common/reactive.h>
-
-#include <asmlib.h>
+#include <common/linq.h>
 
 #include <tbb/concurrent_queue.h>
 
 #include <boost/property_tree/ptree.hpp>
-#include <boost/foreach.hpp>
 #include <boost/optional.hpp>
-#include <boost/range/algorithm_ext/push_back.hpp>
-#include <boost/range/numeric.hpp>
-#include <boost/range/adaptor/map.hpp>
 
 #include <queue>
 
@@ -54,6 +49,9 @@ namespace caspar { namespace reroute {
 class reroute_producer : public reactive::observer<std::map<int, core::draw_frame>>
 					   , public core::frame_producer_base
 {
+	core::monitor::subject											monitor_subject_;
+
+	core::constraints												constraints_;
 	const spl::shared_ptr<diagnostics::graph>						graph_;
 	
 	tbb::concurrent_bounded_queue<std::map<int, core::draw_frame>>	input_buffer_;
@@ -87,8 +85,15 @@ public:
 			return core::draw_frame::late();		
 		}
 
-		return boost::accumulate(frames | boost::adaptors::map_values, core::draw_frame::empty(), core::draw_frame::over);
-	}	
+		return cpplinq::from(frames)
+			.select(values())
+			.aggregate(core::draw_frame::empty(), core::draw_frame::over);
+	}
+
+	core::constraints& pixel_constraints() override
+	{
+		return constraints_;
+	}
 		
 	std::wstring print() const override
 	{
@@ -107,12 +112,9 @@ public:
 		return info;
 	}
 		
-	void subscribe(const monitor::observable::observer_ptr& o) override
+	core::monitor::subject& monitor_output()
 	{
-	}
-
-	void unsubscribe(const monitor::observable::observer_ptr& o) override
-	{
+		return monitor_subject_;
 	}
 };
 
@@ -122,7 +124,7 @@ spl::shared_ptr<core::frame_producer> create_producer(core::video_channel& chann
 	
 	std::weak_ptr<reactive::observer<std::map<int, core::draw_frame>>> o = producer;
 
-	channel.stage().subscribe(o);
+	//channel.stage().monitor_output().link_target.subscribe(o);
 
 	return producer;
 }

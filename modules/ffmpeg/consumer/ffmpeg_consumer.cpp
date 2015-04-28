@@ -36,15 +36,17 @@
 #include <common/env.h>
 #include <common/except.h>
 #include <common/executor.h>
+#include <common/future.h>
 #include <common/diagnostics/graph.h>
 #include <common/lock.h>
 #include <common/memory.h>
 #include <common/param.h>
 #include <common/utf.h>
 #include <common/assert.h>
+#include <common/memshfl.h>
+#include <common/timer.h>
 
 #include <boost/algorithm/string.hpp>
-#include <boost/timer.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/range/algorithm.hpp>
@@ -54,6 +56,7 @@
 #include <tbb/spin_mutex.h>
 
 #include <numeric>
+#include <cstring>
 
 #if defined(_MSC_VER)
 #pragma warning (push)
@@ -127,8 +130,8 @@ struct output_format
 	AVOutputFormat* format;
 	int				width;
 	int				height;
-	CodecID			vcodec;
-	CodecID			acodec;
+	AVCodecID		vcodec;
+	AVCodecID		acodec;
 	int				croptop;
 	int				cropbot;
 
@@ -251,16 +254,16 @@ struct output_format
 	}
 };
 
-typedef std::vector<uint8_t, tbb::cache_aligned_allocator<uint8_t>>	byte_vector;
+typedef cache_aligned_vector<uint8_t> byte_vector;
 
 struct ffmpeg_consumer : boost::noncopyable
 {		
 	const spl::shared_ptr<diagnostics::graph>	graph_;
 	const std::string							filename_;		
-	const std::shared_ptr<AVFormatContext>		oc_;
+	const std::shared_ptr<AVFormatContext>		oc_					{ avformat_alloc_context(), av_free };
 	const core::video_format_desc				format_desc_;	
 
-	monitor::basic_subject						event_subject_;
+	core::monitor::subject						monitor_subject_;
 	
 	tbb::spin_mutex								exception_mutex_;
 	std::exception_ptr							exception_;
@@ -269,22 +272,23 @@ struct ffmpeg_consumer : boost::noncopyable
 	std::shared_ptr<AVStream>					video_st_;
 	
 	byte_vector									picture_buffer_;
+	byte_vector									key_picture_buf_;
 	byte_vector									audio_buffer_;
 	std::shared_ptr<SwrContext>					swr_;
 	std::shared_ptr<SwsContext>					sws_;
 
-	int64_t										frame_number_;
+	int64_t										frame_number_		= 0;
 
 	output_format								output_format_;
+	bool										key_only_;
 	
 	executor									executor_;
 public:
-	ffmpeg_consumer(const std::string& filename, const core::video_format_desc& format_desc, std::vector<option> options)
+	ffmpeg_consumer(const std::string& filename, const core::video_format_desc& format_desc, std::vector<option> options, bool key_only)
 		: filename_(filename)
-		, oc_(avformat_alloc_context(), av_free)
 		, format_desc_(format_desc)
-		, frame_number_(0)
 		, output_format_(format_desc, filename, options)
+		, key_only_(key_only)
 		, executor_(print())
 	{
 		check_space();
@@ -293,6 +297,7 @@ public:
 		boost::filesystem::remove(boost::filesystem::path(env::media_folder() + u16(filename))); // Delete the file if it exists
 
 		graph_->set_color("frame-time", diagnostics::color(0.1f, 1.0f, 0.1f));
+		graph_->set_color("dropped-frame", diagnostics::color(0.3f, 0.6f, 0.3f));
 		graph_->set_text(print());
 		diagnostics::register_graph(graph_);
 
@@ -300,11 +305,13 @@ public:
 
 		oc_->oformat = output_format_.format;
 				
-		strcpy_s(oc_->filename, filename_.c_str());
+		std::strcpy(oc_->filename, filename_.c_str());
 		
 		//  Add the audio and video streams using the default format codecs	and initialize the codecs.
 		video_st_ = add_video_stream(options);
-		audio_st_ = add_audio_stream(options);
+
+		if (!key_only)
+			audio_st_ = add_audio_stream(options);
 				
 		av_dump_format(oc_.get(), 0, filename_.c_str(), 1);
 		 
@@ -316,7 +323,7 @@ public:
 
 		if(options.size() > 0)
 		{
-			BOOST_FOREACH(auto& option, options)
+			for (auto& option : options)
 				CASPAR_LOG(warning) << L"Invalid option: -" << u16(option.name) << L" " << u16(option.value);
 		}
 
@@ -336,7 +343,9 @@ public:
 
 		LOG_ON_ERROR2(av_write_trailer(oc_.get()), "[ffmpeg_consumer]");
 		
-		audio_st_.reset();
+		if (!key_only_)
+			audio_st_.reset();
+
 		video_st_.reset();
 			  
 		if (!(oc_->oformat->flags & AVFMT_NOFILE)) 
@@ -347,7 +356,7 @@ public:
 	
 	// frame_consumer
 
-	boost::unique_future<bool> send(core::const_frame& frame)
+	void send(core::const_frame& frame)
 	{
 		auto exception = lock(exception_mutex_, [&]
 		{
@@ -356,13 +365,21 @@ public:
 
 		if(exception != nullptr)
 			std::rethrow_exception(exception);
-			
-		return executor_.begin_invoke([=]() -> bool
+
+		executor_.begin_invoke([=]
 		{		
 			encode(frame);
-
-			return true;
 		});
+	}
+
+	bool ready_for_frame() const
+	{
+		return !executor_.is_full();
+	}
+
+	void mark_dropped()
+	{
+		graph_->set_tag("dropped-frame");
 	}
 
 	std::wstring print() const
@@ -370,15 +387,10 @@ public:
 		return L"ffmpeg[" + u16(filename_) + L"]";
 	}
 	
-	void subscribe(const monitor::observable::observer_ptr& o)
+	core::monitor::subject& monitor_output()
 	{
-		event_subject_.subscribe(o);
+		return monitor_subject_;
 	}
-
-	void unsubscribe(const monitor::observable::observer_ptr& o)
-	{
-		event_subject_.unsubscribe(o);
-	}		
 
 private:
 	std::shared_ptr<AVStream> add_video_stream(std::vector<option>& options)
@@ -508,7 +520,7 @@ private:
 			return ffmpeg::av_opt_set(c, o.name.c_str(), o.value.c_str(), AV_OPT_SEARCH_CHILDREN) > -1;
 		});
 
-		THROW_ON_ERROR2(avcodec_open(c, encoder), "[ffmpeg_consumer]");
+		THROW_ON_ERROR2(avcodec_open2(c, encoder, nullptr), "[ffmpeg_consumer]");
 
 		return std::shared_ptr<AVStream>(st, [](AVStream* st)
 		{
@@ -530,8 +542,9 @@ private:
 		av_frame->top_field_first	= format_desc_.field_mode == core::field_mode::upper;
 		av_frame->pts				= frame_number_++;
 
-		event_subject_ << monitor::event("frame")	% static_cast<int64_t>(frame_number_)
-													% static_cast<int64_t>(std::numeric_limits<int64_t>::max());
+		monitor_subject_ << core::monitor::message("/frame")
+				% static_cast<int64_t>(frame_number_)
+				% static_cast<int64_t>(std::numeric_limits<int64_t>::max());
 
 		AVPacket pkt;
 		av_init_packet(&pkt);
@@ -627,11 +640,26 @@ private:
 
 		std::shared_ptr<AVFrame> in_frame(avcodec_alloc_frame(), av_free);
 
-		avpicture_fill(reinterpret_cast<AVPicture*>(in_frame.get()), 
-					   const_cast<uint8_t*>(frame.image_data().begin()),
-					   PIX_FMT_BGRA, 
-					   format_desc_.width,
-					   format_desc_.height - output_format_.croptop  - output_format_.cropbot);
+		auto in_picture = reinterpret_cast<AVPicture*>(in_frame.get());
+		
+		if (key_only_)
+		{
+			key_picture_buf_.resize(frame.image_data().size());
+			in_picture->linesize[0] = format_desc_.width * 4;
+			in_picture->data[0] = key_picture_buf_.data();
+
+			aligned_memshfl(in_picture->data[0], frame.image_data().begin(), frame.image_data().size(), 0x0F0F0F0F, 0x0B0B0B0B, 0x07070707, 0x03030303);
+		}
+		else
+		{
+			avpicture_fill(
+					in_picture,
+					const_cast<uint8_t*>(frame.image_data().begin()),
+					PIX_FMT_BGRA,
+					format_desc_.width,
+					format_desc_.height - output_format_.croptop  - output_format_.cropbot);
+		}
+
 		// crop-top
 
 		for(int n = 0; n < 4; ++n)		
@@ -704,7 +732,7 @@ private:
 			if(frame_number_ % 25 == 0)
 				check_space();
 
-			boost::timer frame_timer;
+			caspar::timer frame_timer;
 
 			encode_video_frame(frame);
 			encode_audio_frame(frame);
@@ -723,16 +751,19 @@ private:
 
 struct ffmpeg_consumer_proxy : public core::frame_consumer
 {
-	const std::wstring				filename_;
-	const std::vector<option>		options_;
+	const std::wstring			filename_;
+	const std::vector<option>	options_;
+	const bool					separate_key_;
 
 	std::unique_ptr<ffmpeg_consumer> consumer_;
+	std::unique_ptr<ffmpeg_consumer> key_only_consumer_;
 
 public:
 
-	ffmpeg_consumer_proxy(const std::wstring& filename, const std::vector<option>& options)
+	ffmpeg_consumer_proxy(const std::wstring& filename, const std::vector<option>& options, bool separate_key)
 		: filename_(filename)
 		, options_(options)
+		, separate_key_(separate_key_)
 	{
 	}
 	
@@ -741,12 +772,41 @@ public:
 		if(consumer_)
 			BOOST_THROW_EXCEPTION(invalid_operation() << msg_info("Cannot reinitialize ffmpeg-consumer."));
 
-		consumer_.reset(new ffmpeg_consumer(u8(filename_), format_desc, options_));
+		consumer_.reset(new ffmpeg_consumer(u8(filename_), format_desc, options_, false));
+
+		if (separate_key_)
+		{
+			boost::filesystem::wpath fill_file(filename_);
+			auto without_extension = u16(fill_file.stem().string());
+			auto key_file = env::media_folder() + without_extension + L"_A" + u16(fill_file.extension().string());
+
+			key_only_consumer_.reset(new ffmpeg_consumer(u8(key_file), format_desc, options_, true));
+		}
 	}
 	
-	boost::unique_future<bool> send(core::const_frame frame) override
+	std::future<bool> send(core::const_frame frame) override
 	{
-		return consumer_->send(frame);
+		bool ready_for_frame = consumer_->ready_for_frame();
+		
+		if (ready_for_frame && separate_key_)
+			ready_for_frame = ready_for_frame && key_only_consumer_->ready_for_frame();
+
+		if (ready_for_frame)
+		{
+			consumer_->send(frame);
+			
+			if (separate_key_)
+				key_only_consumer_->send(frame);
+		}
+		else
+		{
+			consumer_->mark_dropped();
+			
+			if (separate_key_)
+				key_only_consumer_->mark_dropped();
+		}
+		
+		return make_ready_future(true);
 	}
 	
 	std::wstring print() const override
@@ -764,6 +824,7 @@ public:
 		boost::property_tree::wptree info;
 		info.add(L"type", L"file");
 		info.add(L"filename", filename_);
+		info.add(L"separate_key", separate_key_);
 		return info;
 	}
 		
@@ -782,27 +843,33 @@ public:
 		return 200;
 	}
 
-	void subscribe(const monitor::observable::observer_ptr& o) override
+	core::monitor::subject& monitor_output()
 	{
-		consumer_->subscribe(o);
+		return consumer_->monitor_output();
+	}
+};	
+spl::shared_ptr<core::frame_consumer> create_consumer(
+		const std::vector<std::wstring>& params, core::interaction_sink*)
+{
+	auto params2 = params;
+	auto separate_key_it = std::find(params2.begin(), params2.end(), L"SEPARATE_KEY");
+	bool separate_key = false;
+
+	if (separate_key_it != params2.end())
+	{
+		separate_key = true;
+		params2.erase(separate_key_it);
 	}
 
-	void unsubscribe(const monitor::observable::observer_ptr& o) override
-	{
-		consumer_->unsubscribe(o);
-	}		
-};	
-spl::shared_ptr<core::frame_consumer> create_consumer(const std::vector<std::wstring>& params)
-{
-	auto str = std::accumulate(params.begin(), params.end(), std::wstring(), [](const std::wstring& lhs, const std::wstring& rhs) {return lhs + L" " + rhs;});
+	auto str = std::accumulate(params2.begin(), params2.end(), std::wstring(), [](const std::wstring& lhs, const std::wstring& rhs) {return lhs + L" " + rhs;});
 	
-	boost::wregex path_exp(L"\\s*FILE(\\s(?<PATH>.+\\.[^\\s]+))?.*", boost::regex::icase);
+	boost::wregex path_exp(LR"(\s*FILE(\s(?<PATH>.+\.[^\s]+))?.*)", boost::regex::icase);
 
 	boost::wsmatch path;
 	if(!boost::regex_match(str, path, path_exp))
 		return core::frame_consumer::empty();
 	
-	boost::wregex opt_exp(L"-((?<NAME>[^\\s]+)\\s+(?<VALUE>[^\\s]+))");	
+	boost::wregex opt_exp(LR"(-((?<NAME>[^\s]+)\s+(?<VALUE>[^\s]+)))");	
 	
 	std::vector<option> options;
 	for(boost::wsregex_iterator it(str.begin(), str.end(), opt_exp); it != boost::wsregex_iterator(); ++it)
@@ -818,18 +885,20 @@ spl::shared_ptr<core::frame_consumer> create_consumer(const std::vector<std::wst
 		options.push_back(option(name, value));
 	}
 				
-	return spl::make_shared<ffmpeg_consumer_proxy>(env::media_folder() + path["PATH"].str(), options);
+	return spl::make_shared<ffmpeg_consumer_proxy>(env::media_folder() + path["PATH"].str(), options, separate_key);
 }
 
-spl::shared_ptr<core::frame_consumer> create_consumer(const boost::property_tree::wptree& ptree)
+spl::shared_ptr<core::frame_consumer> create_preconfigured_consumer(
+		const boost::property_tree::wptree& ptree, core::interaction_sink*)
 {
-	auto filename	= ptree.get<std::wstring>(L"path");
-	auto codec		= ptree.get(L"vcodec", L"libx264");
+	auto filename		= ptree.get<std::wstring>(L"path");
+	auto codec			= ptree.get(L"vcodec", L"libx264");
+	auto separate_key	= ptree.get(L"separate-key", false);
 
 	std::vector<option> options;
 	options.push_back(option("vcodec", u8(codec)));
 	
-	return spl::make_shared<ffmpeg_consumer_proxy>(env::media_folder() + filename, options);
+	return spl::make_shared<ffmpeg_consumer_proxy>(env::media_folder() + filename, options, separate_key);
 }
 
 }}

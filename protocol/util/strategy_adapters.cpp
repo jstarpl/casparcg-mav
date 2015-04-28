@@ -19,7 +19,7 @@
 * Author: Helge Norberg, helge.norberg@svt.se
 */
 
-#include "../stdafx.h"
+#include "../StdAfx.h"
 
 #include "strategy_adapters.h"
 
@@ -58,6 +58,11 @@ public:
 		: client_(client)
 		, codepage_(codepage)
 	{
+		CASPAR_LOG(info) << "from_unicode_client_connection created.";
+	}
+	~from_unicode_client_connection()
+	{
+		CASPAR_LOG(info) << "from_unicode_client_connection destroyed.";
 	}
 
 	virtual void send(std::basic_string<wchar_t>&& data)
@@ -75,6 +80,16 @@ public:
 	virtual std::wstring print() const
 	{
 		return client_->print();
+	}
+
+
+	void add_lifecycle_bound_object(const std::wstring& key, const std::shared_ptr<void>& lifecycle_bound)
+	{
+		client_->add_lifecycle_bound_object(key, lifecycle_bound);
+	}
+	std::shared_ptr<void> remove_lifecycle_bound_object(const std::wstring& key)
+	{
+		return client_->remove_lifecycle_bound_object(key);
 	}
 };
 
@@ -94,14 +109,21 @@ protocol_strategy<char>::ptr to_unicode_adapter_factory::create(
 	return spl::make_shared<to_unicode_adapter>(codepage_, unicode_strategy_factory_->create(client));
 }
 
-class legacy_client_info : public ClientInfo
+/*class legacy_client_info : public ClientInfo
 {
 	client_connection<wchar_t>::ptr client_connection_;
 public:
 	legacy_client_info(const client_connection<wchar_t>::ptr& client_connection)
 		: client_connection_(client_connection)
 	{
+		CASPAR_LOG(info) << "legacy_client_info created.";
 	}
+
+	~legacy_client_info()
+	{
+		CASPAR_LOG(info) << "legacy_client_info destroyed.";
+	}
+
 
 	virtual void Disconnect()
 	{
@@ -117,7 +139,16 @@ public:
 	{
 		return client_connection_->print();
 	}
-};
+	virtual void add_lifecycle_bound_object(const std::wstring& key, const std::shared_ptr<void>& lifecycle_bound)
+	{
+		client_connection_->add_lifecycle_bound_object(key, lifecycle_bound);
+	}
+	virtual std::shared_ptr<void> remove_lifecycle_bound_object(const std::wstring& key)
+	{
+		return client_connection_->remove_lifecycle_bound_object(key);
+	}
+
+};*/
 
 class legacy_strategy_adapter : public protocol_strategy<wchar_t>
 {
@@ -128,14 +159,18 @@ public:
 			const ProtocolStrategyPtr& strategy, 
 			const client_connection<wchar_t>::ptr& client_connection)
 		: strategy_(strategy)
-		, client_info_(std::make_shared<legacy_client_info>(client_connection))
+		, client_info_(client_connection)
 	{
+		CASPAR_LOG(info) << "legacy_strategy_adapter created.";
+	}
+	~legacy_strategy_adapter()
+	{
+		CASPAR_LOG(info) << "legacy_strategy_adapter destroyed.";
 	}
 
 	virtual void parse(const std::basic_string<wchar_t>& data)
 	{
-		auto p = data.c_str();
-		strategy_->Parse(p, static_cast<int>(data.length()), client_info_);
+		strategy_->Parse(data, client_info_);
 	}
 };
 

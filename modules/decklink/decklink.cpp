@@ -19,7 +19,7 @@
 * Author: Robert Nagy, ronag89@gmail.com
 */
 
-#include "stdafx.h"
+#include "StdAfx.h"
 
 #include "decklink.h"
 #include "util/util.h"
@@ -29,86 +29,69 @@
 
 #include <core/consumer/frame_consumer.h>
 #include <core/producer/frame_producer.h>
+#include <core/system_info_provider.h>
 
-#include "interop/DeckLinkAPI_h.h"
+#include <boost/property_tree/ptree.hpp>
 
-#pragma warning(push)
-#pragma warning(disable : 4996)
-
-	#include <atlbase.h>
-
-	#include <atlcom.h>
-	#include <atlhost.h>
-
-#pragma warning(push)
+#include "decklink_api.h"
 
 namespace caspar { namespace decklink {
 
-void init()
+std::wstring version()
 {
-	struct co_init
-	{
-		co_init(){::CoInitialize(nullptr);}
-		~co_init(){::CoUninitialize();}
-	} init;
-	
-	CComPtr<IDeckLinkIterator> pDecklinkIterator;
-	if(FAILED(pDecklinkIterator.CoCreateInstance(CLSID_CDeckLinkIterator)))		
-		return;
-		
-	core::register_consumer_factory([](const std::vector<std::wstring>& params){return create_consumer(params);});
-	core::register_producer_factory(create_producer);
-}
+    std::wstring ver = L"Not found";
 
-std::wstring version() 
-{
-	std::wstring version = L"Not found";
-	
-	struct co_init
-	{
-		co_init(){::CoInitialize(nullptr);}
-		~co_init(){::CoUninitialize();}
-	} init;
+    struct co_init init;
 
 	try
 	{
-		CComPtr<IDeckLinkIterator> pDecklinkIterator;
-		if(SUCCEEDED(pDecklinkIterator.CoCreateInstance(CLSID_CDeckLinkIterator)))		
-			version = decklink::version(pDecklinkIterator);
+        ver = decklink::version(create_iterator());
 	}
-	catch(...){}
+	catch (...){}
 
-	return version;
+    return ver;
 }
 
 std::vector<std::wstring> device_list()
 {
 	std::vector<std::wstring> devices;
-	
-	struct co_init
-	{
-		co_init(){::CoInitialize(nullptr);}
-		~co_init(){::CoUninitialize();}
-	} init;
+
+    struct co_init init;
 
 	try
 	{
-		CComPtr<IDeckLinkIterator> pDecklinkIterator;
-		if(SUCCEEDED(pDecklinkIterator.CoCreateInstance(CLSID_CDeckLinkIterator)))
-		{		
-			IDeckLink* decklink;
-			for(int n = 1; pDecklinkIterator->Next(&decklink) == S_OK; ++n)	
-			{
-				BSTR model_name = L"Unknown";
-				decklink->GetModelName(&model_name);
-				decklink->Release();
-				devices.push_back(std::wstring(model_name) + L" [" + boost::lexical_cast<std::wstring>(n) + L"]");	
-			}
-		}
+        auto pDecklinkIterator = create_iterator();
+        IDeckLink* decklink;
+        for (int n = 1; pDecklinkIterator->Next(&decklink) == S_OK; ++n)
+        {
+            String m_name;
+            bool success = SUCCEEDED(decklink->GetModelName(&m_name));
+            decklink->Release();
+            std::wstring model_name = L"Unknown";
+
+            if (success)
+                model_name = u16(m_name);
+
+            devices.push_back(model_name + L" [" + boost::lexical_cast<std::wstring>(n)+L"]");
+        }
 	}
-	catch(...){}
+	catch (...){}
 
 	return devices;
+}
+
+void init(core::module_dependencies dependencies)
+{
+	core::register_consumer_factory(create_consumer);
+	core::register_preconfigured_consumer_factory(L"decklink", create_preconfigured_consumer);
+	core::register_producer_factory(create_producer);
+	dependencies.system_info_provider_repo->register_system_info_provider([](boost::property_tree::wptree& info)
+	{
+		info.add(L"system.decklink.version", version());
+
+		for (auto device : device_list())
+			info.add(L"system.decklink.device", device);
+	});
 }
 
 }}

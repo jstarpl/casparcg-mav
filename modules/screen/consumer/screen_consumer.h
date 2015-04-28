@@ -30,12 +30,17 @@ namespace caspar {
 	
 namespace core {
 	class frame_consumer;
+	struct interaction_sink;
 }
 
 namespace screen {
 
 
-spl::shared_ptr<core::frame_consumer> create_consumer(const std::vector<std::wstring>& params);
-spl::shared_ptr<core::frame_consumer> create_consumer(const boost::property_tree::wptree& ptree);
+spl::shared_ptr<core::frame_consumer> create_consumer(
+		const std::vector<std::wstring>& params,
+		core::interaction_sink* sink);
+spl::shared_ptr<core::frame_consumer> create_preconfigured_consumer(
+		const boost::property_tree::wptree& ptree,
+		core::interaction_sink* sink);
 
 }}

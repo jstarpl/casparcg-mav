@@ -33,25 +33,25 @@
 #include <common/utf.h>
 #include <common/prec_timer.h>
 #include <common/future.h>
+#include <common/timer.h>
+
+//#include <windows.h>
 
 #include <ffmpeg/producer/filter/filter.h>
 
 #include <core/video_format.h>
 #include <core/frame/frame.h>
 #include <core/consumer/frame_consumer.h>
+#include <core/interaction/interaction_sink.h>
 
-#include <boost/timer.hpp>
 #include <boost/circular_buffer.hpp>
 #include <boost/lexical_cast.hpp>
-#include <boost/foreach.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <boost/thread.hpp>
 
 #include <tbb/atomic.h>
 #include <tbb/concurrent_queue.h>
 #include <tbb/parallel_for.h>
-
-#include <boost/assign.hpp>
 
 #include <asmlib.h>
 
@@ -75,7 +75,7 @@ extern "C"
 
 namespace caspar { namespace screen {
 		
-enum stretch
+enum class stretch
 {
 	none,
 	uniform,
@@ -85,93 +85,101 @@ enum stretch
 
 struct configuration
 {
-	enum aspect_ratio
+	enum class aspect_ratio
 	{
 		aspect_4_3 = 0,
 		aspect_16_9,
 		aspect_invalid,
 	};
 		
-	std::wstring	name;
-	int				screen_index;
-	stretch			stretch;
-	bool			windowed;
-	bool			auto_deinterlace;
-	bool			key_only;
-	aspect_ratio	aspect;	
-	bool			vsync;
-
-	configuration()
-		: name(L"ogl")
-		, screen_index(0)
-		, stretch(fill)
-		, windowed(true)
-		, auto_deinterlace(true)
-		, key_only(false)
-		, aspect(aspect_invalid)
-		, vsync(true)
-	{
-	}
+	std::wstring	name				= L"ogl";
+	int				screen_index		= 0;
+	screen::stretch	stretch				= screen::stretch::fill;
+	bool			windowed			= true;
+	bool			auto_deinterlace	= true;
+	bool			key_only			= false;
+	aspect_ratio	aspect				= aspect_ratio::aspect_invalid;
+	bool			vsync				= true;
+	bool			interactive			= true;
 };
 
 struct screen_consumer : boost::noncopyable
-{		
-	const configuration					config_;
-	core::video_format_desc				format_desc_;
-	int									channel_index_;
+{
+	const configuration									config_;
+	core::video_format_desc								format_desc_;
+	int													channel_index_;
 
-	GLuint								texture_;
-	std::vector<GLuint>					pbos_;
+	GLuint												texture_		= 0;
+	std::vector<GLuint>									pbos_			= std::vector<GLuint> { 0, 0 };
 			
-	float								width_;
-	float								height_;	
-	int									screen_x_;
-	int									screen_y_;
-	int									screen_width_;
-	int									screen_height_;
-	int									square_width_;
-	int									square_height_;				
-	
-	sf::Window							window_;
-	
-	spl::shared_ptr<diagnostics::graph>	graph_;
-	boost::timer						perf_timer_;
-	boost::timer						tick_timer_;
+	float												width_;
+	float												height_;
+	int													screen_x_;
+	int													screen_y_;
+	int													screen_width_	= format_desc_.width;
+	int													screen_height_	= format_desc_.height;
+	int													square_width_	= format_desc_.square_width;
+	int													square_height_	= format_desc_.square_height;
 
-	caspar::prec_timer					wait_timer_;
+	sf::Window											window_;
+
+	spl::shared_ptr<diagnostics::graph>					graph_;
+	caspar::timer										perf_timer_;
+	caspar::timer										tick_timer_;
+
+	caspar::prec_timer									wait_timer_;
 
 	tbb::concurrent_bounded_queue<core::const_frame>	frame_buffer_;
+	core::interaction_sink*								sink_;
 
-	boost::thread						thread_;
-	tbb::atomic<bool>					is_running_;
-	
-	ffmpeg::filter						filter_;
+	boost::thread										thread_;
+	tbb::atomic<bool>									is_running_;
+
+	ffmpeg::filter										filter_;
 public:
-	screen_consumer(const configuration& config, const core::video_format_desc& format_desc, int channel_index) 
+	screen_consumer(
+			const configuration& config,
+			const core::video_format_desc& format_desc,
+			int channel_index,
+			core::interaction_sink* sink) 
 		: config_(config)
 		, format_desc_(format_desc)
 		, channel_index_(channel_index)
-		, texture_(0)
-		, pbos_(2, 0)	
-		, screen_width_(format_desc.width)
-		, screen_height_(format_desc.height)
-		, square_width_(format_desc.square_width)
-		, square_height_(format_desc.square_height)
-		, filter_(format_desc.field_mode == core::field_mode::progressive || !config.auto_deinterlace ? L"" : L"YADIF=1:-1", boost::assign::list_of(PIX_FMT_BGRA))
+		, sink_(sink)
+		, filter_([&]() -> ffmpeg::filter
+		{			
+			const auto sample_aspect_ratio = 
+				boost::rational<int>(
+					format_desc.square_width, 
+					format_desc.square_height) /
+				boost::rational<int>(
+					format_desc.width, 
+					format_desc.height);
+
+			return ffmpeg::filter(
+				format_desc.width,
+				format_desc.height,
+				boost::rational<int>(format_desc.duration, format_desc.time_scale),
+				boost::rational<int>(format_desc.time_scale, format_desc.duration),
+				sample_aspect_ratio,
+				AV_PIX_FMT_BGRA,
+				{ AV_PIX_FMT_BGRA },
+				format_desc.field_mode == core::field_mode::progressive || !config.auto_deinterlace ? "" : "YADIF=1:-1");
+		}())
 	{		
-		if(format_desc_.format == core::video_format::ntsc && config_.aspect == configuration::aspect_4_3)
+		if (format_desc_.format == core::video_format::ntsc && config_.aspect == configuration::aspect_ratio::aspect_4_3)
 		{
 			// Use default values which are 4:3.
 		}
 		else
 		{
-			if(config_.aspect == configuration::aspect_16_9)
+			if (config_.aspect == configuration::aspect_ratio::aspect_16_9)
 				square_width_ = (format_desc.height*16)/9;
-			else if(config_.aspect == configuration::aspect_4_3)
+			else if (config_.aspect == configuration::aspect_ratio::aspect_4_3)
 				square_width_ = (format_desc.height*4)/3;
 		}
 
-		frame_buffer_.set_capacity(2);
+		frame_buffer_.set_capacity(1);
 		
 		graph_->set_color("tick-time", diagnostics::color(0.0f, 0.6f, 0.9f));	
 		graph_->set_color("frame-time", diagnostics::color(0.1f, 1.0f, 0.1f));
@@ -179,7 +187,7 @@ public:
 		graph_->set_text(print());
 		diagnostics::register_graph(graph_);
 									
-		DISPLAY_DEVICE d_device = {sizeof(d_device), 0};			
+		/*DISPLAY_DEVICE d_device = {sizeof(d_device), 0};
 		std::vector<DISPLAY_DEVICE> displayDevices;
 		for(int n = 0; EnumDisplayDevices(NULL, n, &d_device, NULL); ++n)
 			displayDevices.push_back(d_device);
@@ -194,7 +202,11 @@ public:
 		screen_x_		= devmode.dmPosition.x;
 		screen_y_		= devmode.dmPosition.y;
 		screen_width_	= config_.windowed ? square_width_ : devmode.dmPelsWidth;
-		screen_height_	= config_.windowed ? square_height_ : devmode.dmPelsHeight;
+		screen_height_	= config_.windowed ? square_height_ : devmode.dmPelsHeight;*/
+		screen_x_		= 0;
+		screen_y_		= 0;
+		screen_width_	= square_width_;
+		screen_height_	= square_height_;
 		
 		is_running_ = true;
 		thread_ = boost::thread([this]{run();});
@@ -209,11 +221,11 @@ public:
 
 	void init()
 	{
-		window_.Create(sf::VideoMode(screen_width_, screen_height_, 32), u8(print()), config_.windowed ? sf::Style::Resize | sf::Style::Close : sf::Style::Fullscreen);
-		window_.ShowMouseCursor(false);
-		window_.SetPosition(screen_x_, screen_y_);
-		window_.SetSize(screen_width_, screen_height_);
-		window_.SetActive();
+		window_.create(sf::VideoMode(screen_width_, screen_height_, 32), u8(L"Screen consumer " + channel_and_format()), config_.windowed ? sf::Style::Resize | sf::Style::Close : sf::Style::Fullscreen);
+		window_.setMouseCursorVisible(config_.interactive);
+		window_.setPosition(sf::Vector2i(screen_x_, screen_y_));
+		window_.setSize(sf::Vector2u(screen_width_, screen_height_));
+		window_.setActive();
 		
 		if(!GLEW_VERSION_2_1 && glewInit() != GLEW_OK)
 			CASPAR_THROW_EXCEPTION(gl::ogl_exception() << msg_info("Failed to initialize GLEW."));
@@ -246,7 +258,13 @@ public:
 		glBufferDataARB(GL_PIXEL_UNPACK_BUFFER_ARB, format_desc_.size, 0, GL_STREAM_DRAW_ARB);
 		glBindBufferARB(GL_PIXEL_UNPACK_BUFFER_ARB, 0);
 		
-		auto wglSwapIntervalEXT = reinterpret_cast<void(APIENTRY*)(int)>(wglGetProcAddress("wglSwapIntervalEXT"));
+		window_.setVerticalSyncEnabled(config_.vsync);
+
+		if (config_.vsync)
+		{
+			CASPAR_LOG(info) << print() << " Enabled vsync.";
+		}
+		/*auto wglSwapIntervalEXT = reinterpret_cast<void(APIENTRY*)(int)>(wglGetProcAddress("wglSwapIntervalEXT"));
 		if(wglSwapIntervalEXT)
 		{
 			if(config_.vsync)
@@ -256,7 +274,7 @@ public:
 			}
 			else
 				wglSwapIntervalEXT(0);
-		}
+		}*/
 
 		CASPAR_LOG(info) << print() << " Successfully Initialized.";
 	}
@@ -266,7 +284,7 @@ public:
 		if(texture_)
 			glDeleteTextures(1, &texture_);
 
-		BOOST_FOREACH(auto& pbo, pbos_)
+		for (auto& pbo : pbos_)
 		{
 			if(pbo)
 				glDeleteBuffers(1, &pbo);
@@ -284,12 +302,39 @@ public:
 				try
 				{
 					sf::Event e;		
-					while(window_.GetEvent(e))
+					while(window_.pollEvent(e))
 					{
-						if(e.Type == sf::Event::Resized)
+						if (e.type == sf::Event::Resized)
 							calculate_aspect();
-						else if(e.Type == sf::Event::Closed)
+						else if (e.type == sf::Event::Closed)
 							is_running_ = false;
+						else if (config_.interactive && sink_)
+						{
+							switch (e.type)
+							{
+							case sf::Event::MouseMoved:
+								{
+									auto& mouse_move = e.mouseMove;
+									sink_->on_interaction(spl::make_shared<core::mouse_move_event>(
+											1,
+											static_cast<double>(mouse_move.x) / screen_width_,
+											static_cast<double>(mouse_move.y) / screen_height_));
+								}
+								break;
+							case sf::Event::MouseButtonPressed:
+							case sf::Event::MouseButtonReleased:
+								{
+									auto& mouse_button = e.mouseButton;
+									sink_->on_interaction(spl::make_shared<core::mouse_button_event>(
+											1,
+											static_cast<double>(mouse_button.x) / screen_width_,
+											static_cast<double>(mouse_button.y) / screen_height_,
+											static_cast<int>(mouse_button.button),
+											e.type == sf::Event::MouseButtonPressed));
+								}
+								break;
+							}
+						}
 					}
 			
 					auto frame = core::const_frame::empty();
@@ -334,7 +379,7 @@ public:
 	void wait_for_vblank_and_display()
 	{
 		try_sleep_almost_until_vblank();
-		window_.Display();
+		window_.display();
 		// Make sure that the next tick measures the duration from this point in time.
 		wait_timer_.tick(0.0);
 	}
@@ -444,35 +489,40 @@ public:
 	}
 
 
-	boost::unique_future<bool> send(core::const_frame frame)
+	std::future<bool> send(core::const_frame frame)
 	{
 		if(!frame_buffer_.try_push(frame))
 			graph_->set_tag("dropped-frame");
 
-		return wrap_as_future(is_running_.load());
+		return make_ready_future(is_running_.load());
 	}
-		
+
+	std::wstring channel_and_format() const
+	{
+		return L"[" + boost::lexical_cast<std::wstring>(channel_index_) + L"|" + format_desc_.name + L"]";
+	}
+
 	std::wstring print() const
 	{	
-		return config_.name + L"[" + boost::lexical_cast<std::wstring>(channel_index_) + L"|" + format_desc_.name + L"]";
+		return config_.name + channel_and_format();
 	}
 	
 	void calculate_aspect()
 	{
 		if(config_.windowed)
 		{
-			screen_height_ = window_.GetHeight();
-			screen_width_ = window_.GetWidth();
+			screen_height_ = window_.getSize().y;
+			screen_width_ = window_.getSize().x;
 		}
 		
 		GL(glViewport(0, 0, screen_width_, screen_height_));
 
 		std::pair<float, float> target_ratio = None();
-		if(config_.stretch == fill)
+		if (config_.stretch == screen::stretch::fill)
 			target_ratio = Fill();
-		else if(config_.stretch == uniform)
+		else if (config_.stretch == screen::stretch::uniform)
 			target_ratio = Uniform();
-		else if(config_.stretch == uniform_to_fill)
+		else if (config_.stretch == screen::stretch::uniform_to_fill)
 			target_ratio = UniformToFill();
 
 		width_ = target_ratio.first;
@@ -517,23 +567,28 @@ public:
 
 struct screen_consumer_proxy : public core::frame_consumer
 {
-	const configuration config_;
-	std::unique_ptr<screen_consumer> consumer_;
+	core::monitor::subject				monitor_subject_;
+	const configuration					config_;
+	std::unique_ptr<screen_consumer>	consumer_;
+	core::interaction_sink*				sink_;
 
 public:
 
-	screen_consumer_proxy(const configuration& config)
-		: config_(config){}
+	screen_consumer_proxy(const configuration& config, core::interaction_sink* sink)
+		: config_(config)
+		, sink_(sink)
+	{
+	}
 	
 	// frame_consumer
 
 	void initialize(const core::video_format_desc& format_desc, int channel_index) override
 	{
 		consumer_.reset();
-		consumer_.reset(new screen_consumer(config_, format_desc, channel_index));
+		consumer_.reset(new screen_consumer(config_, format_desc, channel_index, sink_));
 	}
 	
-	boost::unique_future<bool> send(core::const_frame frame) override
+	std::future<bool> send(core::const_frame frame) override
 	{
 		return consumer_->send(frame);
 	}
@@ -565,7 +620,7 @@ public:
 	
 	int buffer_depth() const override
 	{
-		return 2;
+		return 1;
 	}
 
 	int index() const override
@@ -573,16 +628,13 @@ public:
 		return 600 + (config_.key_only ? 10 : 0) + config_.screen_index;
 	}
 
-	void subscribe(const monitor::observable::observer_ptr& o) override
+	core::monitor::subject& monitor_output()
 	{
+		return monitor_subject_;
 	}
-
-	void unsubscribe(const monitor::observable::observer_ptr& o) override
-	{
-	}	
 };	
 
-spl::shared_ptr<core::frame_consumer> create_consumer(const std::vector<std::wstring>& params)
+spl::shared_ptr<core::frame_consumer> create_consumer(const std::vector<std::wstring>& params, core::interaction_sink* sink)
 {
 	if(params.size() < 1 || params[0] != L"SCREEN")
 		return core::frame_consumer::empty();
@@ -592,17 +644,18 @@ spl::shared_ptr<core::frame_consumer> create_consumer(const std::vector<std::wst
 	if(params.size() > 1)
 		config.screen_index = boost::lexical_cast<int>(params[1]);
 		
-	config.key_only = std::find(params.begin(), params.end(), L"WINDOWED") != params.end();
-	config.key_only = std::find(params.begin(), params.end(), L"KEY_ONLY") != params.end();
+	config.windowed		= std::find(params.begin(), params.end(), L"WINDOWED") != params.end();
+	config.key_only		= std::find(params.begin(), params.end(), L"KEY_ONLY") != params.end();
+	config.interactive	= std::find(params.begin(), params.end(), L"INTERACTIVE") != params.end();
 
 	auto name_it	= std::find(params.begin(), params.end(), L"NAME");
 	if(name_it != params.end() && ++name_it != params.end())
 		config.name = *name_it;
 
-	return spl::make_shared<screen_consumer_proxy>(config);
+	return spl::make_shared<screen_consumer_proxy>(config, sink);
 }
 
-spl::shared_ptr<core::frame_consumer> create_consumer(const boost::property_tree::wptree& ptree) 
+spl::shared_ptr<core::frame_consumer> create_preconfigured_consumer(const boost::property_tree::wptree& ptree, core::interaction_sink* sink) 
 {
 	configuration config;
 	config.name				= ptree.get(L"name",	 config.name);
@@ -614,17 +667,17 @@ spl::shared_ptr<core::frame_consumer> create_consumer(const boost::property_tree
 	
 	auto stretch_str = ptree.get(L"stretch", L"default");
 	if(stretch_str == L"uniform")
-		config.stretch = stretch::uniform;
+		config.stretch = screen::stretch::uniform;
 	else if(stretch_str == L"uniform_to_fill")
-		config.stretch = stretch::uniform_to_fill;
+		config.stretch = screen::stretch::uniform_to_fill;
 
 	auto aspect_str = ptree.get(L"aspect-ratio", L"default");
 	if(aspect_str == L"16:9")
-		config.aspect = configuration::aspect_16_9;
+		config.aspect = configuration::aspect_ratio::aspect_16_9;
 	else if(aspect_str == L"4:3")
-		config.aspect = configuration::aspect_4_3;
+		config.aspect = configuration::aspect_ratio::aspect_4_3;
 	
-	return spl::make_shared<screen_consumer_proxy>(config);
+	return spl::make_shared<screen_consumer_proxy>(config, sink);
 }
 
 }}

@@ -4,23 +4,25 @@
 
 #include "frame_consumer.h"
 #include "../frame/frame.h"
+#include <boost/lexical_cast.hpp>
+
+#include <future>
 
 namespace caspar { namespace core {
 
 struct port::impl
 {
-	monitor::basic_subject				event_subject_;
-	std::shared_ptr<frame_consumer>		consumer_;
 	int									index_;
+	spl::shared_ptr<monitor::subject>	monitor_subject_ = spl::make_shared<monitor::subject>("/port" + boost::lexical_cast<std::string>(index_));
+	std::shared_ptr<frame_consumer>		consumer_;
 	int									channel_index_;
 public:
 	impl(int index, int channel_index, spl::shared_ptr<frame_consumer> consumer)
-		: event_subject_(monitor::path("port") % index)
+		: index_(index)
 		, consumer_(std::move(consumer))
-		, index_(index)
 		, channel_index_(channel_index)
 	{
-		consumer_->subscribe(event_subject_);
+		consumer_->monitor_output().attach_parent(monitor_subject_);
 	}
 	
 	void video_format_desc(const struct video_format_desc& format_desc)
@@ -28,12 +30,16 @@ public:
 		consumer_->initialize(format_desc, channel_index_);
 	}
 		
-	boost::unique_future<bool> send(const_frame frame)
+	std::future<bool> send(const_frame frame)
 	{
-		event_subject_ << monitor::event("type") % consumer_->name();
+		*monitor_subject_ << monitor::message("/type") % consumer_->name();
 		return consumer_->send(std::move(frame));
 	}
-	
+	std::wstring print() const
+	{
+		return consumer_->print();
+	}
+
 	int index() const
 	{
 		return index_;
@@ -59,11 +65,11 @@ port::port(int index, int channel_index, spl::shared_ptr<frame_consumer> consume
 port::port(port&& other) : impl_(std::move(other.impl_)){}
 port::~port(){}
 port& port::operator=(port&& other){impl_ = std::move(other.impl_); return *this;}
-boost::unique_future<bool> port::send(const_frame frame){return impl_->send(std::move(frame));}	
-void port::subscribe(const monitor::observable::observer_ptr& o){impl_->event_subject_.subscribe(o);}
-void port::unsubscribe(const monitor::observable::observer_ptr& o){impl_->event_subject_.unsubscribe(o);}
+std::future<bool> port::send(const_frame frame){return impl_->send(std::move(frame));}	
+monitor::subject& port::monitor_output() {return *impl_->monitor_subject_;}
 void port::video_format_desc(const struct video_format_desc& format_desc){impl_->video_format_desc(format_desc);}
 int port::buffer_depth() const{return impl_->buffer_depth();}
+std::wstring port::print() const{ return impl_->print();}
 bool port::has_synchronization_clock() const{return impl_->has_synchronization_clock();}
 boost::property_tree::wptree port::info() const{return impl_->info();}
 }}

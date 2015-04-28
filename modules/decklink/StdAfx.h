@@ -21,14 +21,17 @@
 
 #pragma once
 
-#ifdef _DEBUG
+#ifdef __cplusplus
+#if defined _DEBUG && defined _MSC_VER
 #include <crtdbg.h>
 #endif
 
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 
+#if defined(_MSC_VER)
 #include <Windows.h>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -43,11 +46,8 @@
 #include <tbb/atomic.h>
 #include <tbb/concurrent_queue.h>
 #include <tbb/cache_aligned_allocator.h>
-#include <boost/assign.hpp>
 #include <boost/circular_buffer.hpp>
-#include <boost/timer.hpp>
 #include <boost/filesystem.hpp>
-#include <boost/foreach.hpp>
 #include <boost/range.hpp>
 #include <boost/range/algorithm.hpp>
 #include <boost/property_tree/ptree.hpp>
@@ -70,12 +70,14 @@ extern "C"
 #pragma warning(push)
 #pragma warning(disable : 4996)
 
-	#include <atlbase.h>
+#if defined(_MSC_VER)
+    #include <atlbase.h>
 
 	#include <atlcom.h>
 	#include <atlhost.h>
+#endif
 
-#pragma warning(push)
+#pragma warning(pop)
 
 #include <functional>
 
@@ -84,3 +86,11 @@ extern "C"
 #include "../common/utf.h"
 #include "../common/except.h"
 #include "../common/log.h"
+#include "../common/timer.h"
+#endif
+
+#if defined(_MSC_VER)
+#include <rpc.h>
+#include <rpcndr.h>
+#endif
+

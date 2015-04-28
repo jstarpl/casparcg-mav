@@ -40,10 +40,9 @@
 #include <common/except.h>
 #include <common/array.h>
 #include <common/tweener.h>
+#include <common/param.h>
 
-#include <boost/assign.hpp>
 #include <boost/filesystem.hpp>
-#include <boost/foreach.hpp>
 #include <boost/lexical_cast.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <boost/scoped_array.hpp>
@@ -51,42 +50,38 @@
 #include <algorithm>
 #include <array>
 
-using namespace boost::assign;
-
 namespace caspar { namespace image {
 		
 struct image_scroll_producer : public core::frame_producer_base
 {	
-	monitor::basic_subject			event_subject_;
+	core::monitor::subject			monitor_subject_;
 
 	const std::wstring				filename_;
 	std::vector<core::draw_frame>	frames_;
 	core::video_format_desc			format_desc_;
 	int								width_;
 	int								height_;
+	core::constraints				constraints_;
 
-	double							delta_;
+	double							delta_				= 0.0;
 	double							speed_;
 
-	int								start_offset_x_;
-	int								start_offset_y_;
+	int								start_offset_x_		= 0;
+	int								start_offset_y_		= 0;
 	bool							progressive_;
 	
 	explicit image_scroll_producer(
-		const spl::shared_ptr<core::frame_factory>& frame_factory, 
-		const core::video_format_desc& format_desc, 
-		const std::wstring& filename, 
-		double speed,
-		double duration,
-		int motion_blur_px = 0,
-		bool premultiply_with_alpha = false,
-		bool progressive = false)
+			const spl::shared_ptr<core::frame_factory>& frame_factory,
+			const core::video_format_desc& format_desc,
+			const std::wstring& filename,
+			double speed,
+			double duration,
+			int motion_blur_px = 0,
+			bool premultiply_with_alpha = false,
+			bool progressive = false)
 		: filename_(filename)
-		, delta_(0)
 		, format_desc_(format_desc)
 		, speed_(speed)
-		, start_offset_x_(0)
-		, start_offset_y_(0)
 		, progressive_(progressive)
 	{
 		auto bitmap = load_image(filename_);
@@ -94,6 +89,8 @@ struct image_scroll_producer : public core::frame_producer_base
 
 		width_  = FreeImage_GetWidth(bitmap.get());
 		height_ = FreeImage_GetHeight(bitmap.get());
+		constraints_.width.set(width_);
+		constraints_.height.set(height_);
 
 		bool vertical = width_ == format_desc_.width;
 		bool horizontal = height_ == format_desc_.height;
@@ -159,7 +156,7 @@ struct image_scroll_producer : public core::frame_producer_base
 
 			blurred_copy.reset(new uint8_t[count]);
 			image_view<bgra_pixel> blurred_view(blurred_copy.get(), width_, height_);
-			core::tweener blur_tweener(L"easeInQuad");
+			caspar::tweener blur_tweener(L"easeInQuad");
 			blur(original_view, blurred_view, angle, motion_blur_px, blur_tweener);
 			bytes = blurred_copy.get();
 			bitmap.reset();
@@ -242,7 +239,7 @@ struct image_scroll_producer : public core::frame_producer_base
 		std::vector<core::draw_frame> result;
 		result.reserve(frames_.size());
 
-		BOOST_FOREACH(auto& frame, frames_)
+		for (auto& frame : frames_)
 		{
 			auto& fill_translation = frame.transform().image_transform.fill_translation;
 
@@ -346,11 +343,16 @@ struct image_scroll_producer : public core::frame_producer_base
 			result = core::draw_frame::interlace(field1, field2, format_desc_.field_mode);
 		}
 		
-		event_subject_ << monitor::event("file/path") % filename_
-					   << monitor::event("delta") % delta_ 
-					   << monitor::event("speed") % speed_;
+		monitor_subject_ << core::monitor::message("/file/path") % filename_
+						 << core::monitor::message("/delta") % delta_ 
+						 << core::monitor::message("/speed") % speed_;
 
 		return result;
+	}
+
+	core::constraints& pixel_constraints() override
+	{
+		return constraints_;
 	}
 				
 	std::wstring print() const override
@@ -385,20 +387,28 @@ struct image_scroll_producer : public core::frame_producer_base
 		}
 	}
 
-	void subscribe(const monitor::observable::observer_ptr& o) override															
+	core::monitor::subject& monitor_output()
 	{
-		return event_subject_.subscribe(o);
-	}
-
-	void unsubscribe(const monitor::observable::observer_ptr& o) override		
-	{
-		return event_subject_.unsubscribe(o);
+		return monitor_subject_;
 	}
 };
 
 spl::shared_ptr<core::frame_producer> create_scroll_producer(const spl::shared_ptr<core::frame_factory>& frame_factory, const core::video_format_desc& format_desc, const std::vector<std::wstring>& params)
 {
-	static const std::vector<std::wstring> extensions = list_of(L".png")(L".tga")(L".bmp")(L".jpg")(L".jpeg")(L".gif")(L".tiff")(L".tif")(L".jp2")(L".jpx")(L".j2k")(L".j2c");
+	static const auto extensions = {
+		L".png",
+		L".tga",
+		L".bmp",
+		L".jpg",
+		L".jpeg",
+		L".gif",
+		L".tiff",
+		L".tif",
+		L".jp2",
+		L".jpx",
+		L".j2k",
+		L".j2c"
+	};
 	std::wstring filename = env::media_folder() + L"\\" + params[0];
 	
 	auto ext = std::find_if(extensions.begin(), extensions.end(), [&](const std::wstring& ex) -> bool
@@ -409,37 +419,19 @@ spl::shared_ptr<core::frame_producer> create_scroll_producer(const spl::shared_p
 	if(ext == extensions.end())
 		return core::frame_producer::empty();
 	
-	double speed = 0.0;
 	double duration = 0.0;
-	auto speed_it = std::find(params.begin(), params.end(), L"SPEED");
-	if(speed_it != params.end())
-	{
-		if(++speed_it != params.end())
-			speed = boost::lexical_cast<double>(*speed_it);
-	}
+	double speed = get_param(L"SPEED", params, 0.0);
 
 	if (speed == 0)
-	{
-		auto duration_it = std::find(params.begin(), params.end(), L"DURATION");
-
-		if (duration_it != params.end() && ++duration_it != params.end())
-		{
-			duration = boost::lexical_cast<double>(*duration_it);
-		}
-	}
+		duration = get_param(L"DURATION", params, 0.0);
 
 	if(speed == 0 && duration == 0)
 		return core::frame_producer::empty();
 
-	int motion_blur_px = 0;
-	auto blur_it = std::find(params.begin(), params.end(), L"BLUR");
-	if (blur_it != params.end() && ++blur_it != params.end())
-	{
-		motion_blur_px = boost::lexical_cast<int>(*blur_it);
-	}
+	int motion_blur_px = get_param(L"BLUR", params, 0);
 
-	bool premultiply_with_alpha = std::find(params.begin(), params.end(), L"PREMULTIPLY") != params.end();
-	bool progressive = std::find(params.begin(), params.end(), L"PROGRESSIVE") != params.end();
+	bool premultiply_with_alpha = contains_param(L"PREMULTIPLY", params);
+	bool progressive = contains_param(L"PROGRESSIVE", params);
 
 	return core::create_destroy_proxy(spl::make_shared<image_scroll_producer>(
 		frame_factory, 

@@ -24,9 +24,9 @@
 #include "../monitor/monitor.h"
 
 #include <common/memory.h>
+#include <common/future_fwd.h>
 
 #include <boost/property_tree/ptree_fwd.hpp>
-#include <boost/thread/future.hpp>
 
 #include <functional>
 #include <string>
@@ -34,8 +34,10 @@
 
 namespace caspar { namespace core {
 
+struct interaction_sink;
+
 // Interface
-class frame_consumer : public monitor::observable
+class frame_consumer
 {
 	frame_consumer(const frame_consumer&);
 	frame_consumer& operator=(const frame_consumer&);
@@ -52,13 +54,12 @@ public:
 	
 	// Methods
 
-	virtual boost::unique_future<bool>		send(class const_frame frame) = 0;
+	virtual std::future<bool>				send(class const_frame frame) = 0;
 	virtual void							initialize(const struct video_format_desc& format_desc, int channel_index) = 0;
 	
 	// monitor::observable
 
-	virtual void subscribe(const monitor::observable::observer_ptr& o) = 0;
-	virtual void unsubscribe(const monitor::observable::observer_ptr& o) = 0;
+	virtual monitor::subject& monitor_output() = 0;
 
 	// Properties
 
@@ -70,9 +71,23 @@ public:
 	virtual int								index() const = 0;
 };
 
-typedef std::function<spl::shared_ptr<frame_consumer>(const std::vector<std::wstring>&)> consumer_factory_t;
+typedef std::function<spl::shared_ptr<frame_consumer>(
+		const std::vector<std::wstring>&,
+		interaction_sink* sink)> consumer_factory_t;
+typedef std::function<spl::shared_ptr<frame_consumer>(
+		const boost::property_tree::wptree& element,
+		interaction_sink* sink)> preconfigured_consumer_factory_t;
 
 void register_consumer_factory(const consumer_factory_t& factory);
-spl::shared_ptr<frame_consumer> create_consumer(const std::vector<std::wstring>& params);
+void register_preconfigured_consumer_factory(
+		const std::wstring& element_name,
+		const preconfigured_consumer_factory_t& factory);
+spl::shared_ptr<frame_consumer> create_consumer(
+		const std::vector<std::wstring>& params,
+		interaction_sink* sink);
+spl::shared_ptr<frame_consumer> create_consumer(
+		const std::wstring& element_name,
+		const boost::property_tree::wptree& element,
+		interaction_sink* sink);
 
 }}

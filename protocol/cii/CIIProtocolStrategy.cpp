@@ -26,10 +26,10 @@
 #include <sstream>
 #include <algorithm>
 #include "CIIProtocolStrategy.h"
-#include "CIICommandsimpl.h"
-#include <modules/flash/producer/flash_producer.h>
+#include "CIICommandsImpl.h"
 #include <core/producer/transition/transition_producer.h>
 #include <core/mixer/mixer.h>
+#include <core/diagnostics/call_context.h>
 #include <common/env.h>
 
 #include <boost/algorithm/string/replace.hpp>
@@ -42,45 +42,27 @@ namespace caspar { namespace protocol { namespace cii {
 	
 using namespace core;
 
-const std::wstring CIIProtocolStrategy::MessageDelimiter = TEXT("\r\n");
-const TCHAR CIIProtocolStrategy::TokenDelimiter = TEXT('\\');
+const std::wstring CIIProtocolStrategy::MessageDelimiter = L"\r\n";
+const wchar_t CIIProtocolStrategy::TokenDelimiter = L'\\';
 
-CIIProtocolStrategy::CIIProtocolStrategy(const std::vector<spl::shared_ptr<core::video_channel>>& channels) : pChannel_(channels.at(0)), executor_(L"CIIProtocolStrategy")
+CIIProtocolStrategy::CIIProtocolStrategy(
+		const std::vector<spl::shared_ptr<core::video_channel>>& channels, 
+		const spl::shared_ptr<core::cg_producer_registry>& cg_registry)
+	: executor_(L"CIIProtocolStrategy")
+	, pChannel_(channels.at(0))
+	, cg_registry_(cg_registry)
 {
 }
 
-void CIIProtocolStrategy::Parse(const TCHAR* pData, int charCount, IO::ClientInfoPtr pClientInfo) 
+//The paser method expects message to be complete messages with the delimiter stripped away.
+//Thesefore the AMCPProtocolStrategy should be decorated with a delimiter_based_chunking_strategy
+void CIIProtocolStrategy::Parse(const std::wstring& message, IO::ClientInfoPtr client) 
 {
-	std::size_t pos;
-	std::wstring msg(pData, charCount);
-	std::wstring availibleData = currentMessage_ + msg;
-
-	while(true)
+	if(message.length() > 0)
 	{
-		pos = availibleData.find(MessageDelimiter);
-		if(pos != std::wstring::npos)
-		{
-			std::wstring message = availibleData.substr(0,pos);
-
-			if(message.length() > 0) {
-				ProcessMessage(message, pClientInfo);
-				if(pClientInfo != 0)
-					pClientInfo->Send(TEXT("*\r\n"));
-			}
-
-			std::size_t nextStartPos = pos + MessageDelimiter.length();
-			if(nextStartPos < availibleData.length())
-				availibleData = availibleData.substr(nextStartPos);
-			else 
-			{
-				availibleData.clear();
-				break;
-			}
-		}
-		else
-			break;
+		ProcessMessage(message, client);
+		client->send(std::wstring(L"*\r\n"));
 	}
-	currentMessage_ = availibleData;
 }
 
 void CIIProtocolStrategy::ProcessMessage(const std::wstring& message, IO::ClientInfoPtr pClientInfo)
@@ -108,16 +90,16 @@ int CIIProtocolStrategy::TokenizeMessage(const std::wstring& message, std::vecto
 		if(message[charIndex] == TokenDelimiter) 
 		{
 			pTokenVector->push_back(currentToken.str());
-			currentToken.str(TEXT(""));
+			currentToken.str(L"");
 			continue;
 		}
 
-		if(message[charIndex] == TEXT('\"')) 
-			currentToken << TEXT("&quot;");		
-		else if(message[charIndex] == TEXT('<')) 
-			currentToken << TEXT("&lt;");		
-		else if(message[charIndex] == TEXT('>')) 
-			currentToken << TEXT("&gt;");		
+		if(message[charIndex] == L'\"')
+			currentToken << L"&quot;";
+		else if(message[charIndex] == L'<')
+			currentToken << L"&lt;";
+		else if(message[charIndex] == L'>')
+			currentToken << L"&gt;";
 		else 
 			currentToken << message[charIndex];
 	}
@@ -131,66 +113,64 @@ int CIIProtocolStrategy::TokenizeMessage(const std::wstring& message, std::vecto
 /************
 // Examples (<X> = ASCIICHAR X)
 
-I\25\3\VII\\									sätter outputtype till 'vii'
+I\25\3\VII\\									sï¿½tter outputtype till 'vii'
 I\25\4\1\\										enablar framebuffer (ignore this)
 
-M\C/SVTNEWS\\									pekar ut vilken grafisk profil som skall användas
+M\C/SVTNEWS\\									pekar ut vilken grafisk profil som skall anvï¿½ndas
 
-W\4009\4067\Jonas Björkman\\					Skriver "Jonas Björkman" till första textfältet i template 4067 och sparar den färdiga skylten som 4009
+W\4009\4067\Jonas Bjï¿½rkman\\					Skriver "Jonas Bjï¿½rkman" till fï¿½rsta textfï¿½ltet i template 4067 och sparar den fï¿½rdiga skylten som 4009
 
-T\7\4009.VII\A\\								lägger ut skylt 4009
+T\7\4009.VII\A\\								lï¿½gger ut skylt 4009
 
-Y\<205><247><202><196><192><192><200><248>\\	lägger ut skylten 4008 (<205><247><202><196><192><192><200><248> = "=g:4008h" om man drar bort 144 från varje asciivärde)
+Y\<205><247><202><196><192><192><200><248>\\	lï¿½gger ut skylten 4008 (<205><247><202><196><192><192><200><248> = "=g:4008h" om man drar bort 144 frï¿½n varje asciivï¿½rde)
 
-V\5\3\1\1\namn.tga\1\\							lägger ut bilden namn.tga
-V\0\1\D\C\10\0\0\0\\							gör någon inställning som har med föregående kommando att göra.
+V\5\3\1\1\namn.tga\1\\							lï¿½gger ut bilden namn.tga
+V\0\1\D\C\10\0\0\0\\							gï¿½r nï¿½gon instï¿½llning som har med fï¿½regï¿½ende kommando att gï¿½ra.
 
 *************/
 
 /**********************
 New Commands to support the Netupe automation system
-V\5\13\1\1\Template\0\TabField1\TabField2...\\		Build. Ettan före Template indikerar vilket lager den nya templaten skall laddas in i. OBS. Skall inte visas efter det här steget
-Y\<27>\\											Stop. Här kommer ett lagerID också att skickas med (<27> = ESC)
-Y\<254>\\											Clear Canvas. Här kommer ett lagerID också att skickas med, utan det skall allt tömmas
-Y\<213><243>\\										Play. Här kommer ett lagerID också att skickas med
+V\5\13\1\1\Template\0\TabField1\TabField2...\\		Build. Ettan fï¿½re Template indikerar vilket lager den nya templaten skall laddas in i. OBS. Skall inte visas efter det hï¿½r steget
+Y\<27>\\											Stop. Hï¿½r kommer ett lagerID ocksï¿½ att skickas med (<27> = ESC)
+Y\<254>\\											Clear Canvas. Hï¿½r kommer ett lagerID ocksï¿½ att skickas med, utan det skall allt tï¿½mmas
+Y\<213><243>\\										Play. Hï¿½r kommer ett lagerID ocksï¿½ att skickas med
 
 **********************/
 CIICommandPtr CIIProtocolStrategy::Create(const std::wstring& name)
 {
 	switch(name[0])
 	{
-		case TEXT('M'): return std::make_shared<MediaCommand>(this);
-		case TEXT('W'): return std::make_shared<WriteCommand>(this);
-		case TEXT('T'): return std::make_shared<ImagestoreCommand>(this);
-		case TEXT('V'): return std::make_shared<MiscellaneousCommand>(this);
-		case TEXT('Y'): return std::make_shared<KeydataCommand>(this);
+		case L'M': return std::make_shared<MediaCommand>(this);
+		case L'W': return std::make_shared<WriteCommand>(this);
+		case L'T': return std::make_shared<ImagestoreCommand>(this);
+		case L'V': return std::make_shared<MiscellaneousCommand>(this);
+		case L'Y': return std::make_shared<KeydataCommand>(this);
 		default:		return nullptr;
 	}
 }
 
 void CIIProtocolStrategy::WriteTemplateData(const std::wstring& templateName, const std::wstring& titleName, const std::wstring& xmlData) 
 {
-	std::wstring fullTemplateFilename = env::template_folder();
-	if(currentProfile_.size() > 0)
+	std::wstring fullTemplateFilename = templateName;
+
+	if (!currentProfile_.empty())
+		fullTemplateFilename = currentProfile_ + L"/" + templateName;
+
+	core::diagnostics::scoped_call_context save;
+	core::diagnostics::call_context::for_thread().video_channel = 1;
+	core::diagnostics::call_context::for_thread().layer = 0;
+	auto producer = cg_registry_->create_producer(GetChannel(), fullTemplateFilename);
+
+	if (producer == core::frame_producer::empty())
 	{
-		fullTemplateFilename += currentProfile_;
-		fullTemplateFilename += TEXT("\\");
-	}
-	fullTemplateFilename += templateName;
-	fullTemplateFilename = flash::find_template(fullTemplateFilename);
-	if(fullTemplateFilename.empty())
-	{
-		CASPAR_LOG(error) << "Failed to save instance of " << templateName << TEXT(" as ") << titleName << TEXT(", template ") << fullTemplateFilename << " not found";
+		CASPAR_LOG(error) << "Failed to save instance of " << templateName << L" as " << titleName << L", template " << fullTemplateFilename << L"not found";
 		return;
 	}
-	
-	auto producer = flash::create_producer(this->GetChannel()->frame_factory(), this->GetChannel()->video_format_desc(), boost::assign::list_of(env::template_folder()+TEXT("CG.fth")));
 
-	std::wstringstream flashParam;
-	flashParam << TEXT("<invoke name=\"Add\" returntype=\"xml\"><arguments><number>1</number><string>") << currentProfile_ << '/' <<  templateName << TEXT("</string><number>0</number><true/><string> </string><string><![CDATA[ ") << xmlData << TEXT(" ]]></string></arguments></invoke>");
-	producer->call(flashParam.str());
+	cg_registry_->get_proxy(producer)->add(1, fullTemplateFilename, true, L"", xmlData);
 
-	CASPAR_LOG(info) << "Saved an instance of " << templateName << TEXT(" as ") << titleName ;
+	CASPAR_LOG(info) << "Saved an instance of " << templateName << L" as " << titleName ;
 
 	PutPreparedTemplate(titleName, spl::shared_ptr<core::frame_producer>(std::move(producer)));
 	
@@ -216,6 +196,10 @@ void CIIProtocolStrategy::DisplayMediaFile(const std::wstring& filename)
 	transition_info transition;
 	transition.type = transition_type::mix;
 	transition.duration = 12;
+
+	core::diagnostics::scoped_call_context save;
+	core::diagnostics::call_context::for_thread().video_channel = 1;
+	core::diagnostics::call_context::for_thread().layer = 0;
 
 	auto pFP = create_producer(GetChannel()->frame_factory(), GetChannel()->video_format_desc(), filename);
 	auto pTransition = create_transition_producer(GetChannel()->video_format_desc().field_mode, pFP, transition);
@@ -251,7 +235,7 @@ spl::shared_ptr<core::frame_producer> CIIProtocolStrategy::GetPreparedTemplate(c
 	return result;
 }
 
-void CIIProtocolStrategy::PutPreparedTemplate(const std::wstring& titleName, spl::shared_ptr<core::frame_producer>& pFP)
+void CIIProtocolStrategy::PutPreparedTemplate(const std::wstring& titleName, const spl::shared_ptr<core::frame_producer>& pFP)
 {
 	CASPAR_LOG(debug) << L"Saved title with name " << titleName;
 

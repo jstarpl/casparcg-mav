@@ -19,7 +19,7 @@
 * Author: Robert Nagy, ronag89@gmail.com
 */
 
-#include "../stdafx.h"
+#include "../StdAfx.h"
 
 #include "layer.h"
 
@@ -36,35 +36,41 @@ namespace caspar { namespace core {
 
 struct layer::impl
 {				
-	monitor::basic_subject				event_subject_;
-	monitor::basic_subject				foreground_event_subject_;
-	monitor::basic_subject				background_event_subject_;
-	spl::shared_ptr<frame_producer>		foreground_;
-	spl::shared_ptr<frame_producer>		background_;
+	spl::shared_ptr<monitor::subject>	monitor_subject_;
+	spl::shared_ptr<frame_producer>		foreground_			= frame_producer::empty();
+	spl::shared_ptr<frame_producer>		background_			= frame_producer::empty();;
 	boost::optional<int32_t>			auto_play_delta_;
+	bool								is_paused_			= false;
 
 public:
 	impl(int index) 
-		: event_subject_(monitor::path("layer") % index)
-		, foreground_event_subject_("")
-		, background_event_subject_("background")
-		, foreground_(frame_producer::empty())
-		, background_(frame_producer::empty())
+		: monitor_subject_(spl::make_shared<monitor::subject>(
+				"/layer/" + boost::lexical_cast<std::string>(index)))
+//		, foreground_event_subject_("")
+//		, background_event_subject_("background")
 	{
-		foreground_event_subject_.subscribe(event_subject_);
-		background_event_subject_.subscribe(event_subject_);
+//		foreground_event_subject_.subscribe(event_subject_);
+//		background_event_subject_.subscribe(event_subject_);
+	}
+
+	void set_foreground(spl::shared_ptr<frame_producer> producer)
+	{
+		foreground_->monitor_output().detach_parent();
+		foreground_ = std::move(producer);
+		foreground_->monitor_output().attach_parent(monitor_subject_);
 	}
 
 	void pause()
 	{
 		foreground_->paused(true);
+		is_paused_ = true;
 	}
 	
 	void load(spl::shared_ptr<frame_producer> producer, bool preview, const boost::optional<int32_t>& auto_play_delta)
 	{		
-		background_->unsubscribe(background_event_subject_);
+//		background_->unsubscribe(background_event_subject_);
 		background_ = std::move(producer);
-		background_->subscribe(background_event_subject_);
+//		background_->subscribe(background_event_subject_);
 
 		auto_play_delta_ = auto_play_delta;
 
@@ -72,6 +78,7 @@ public:
 		{
 			play();
 			foreground_->paused(true);
+			is_paused_ = true;
 		}
 
 		if(auto_play_delta_ && foreground_ == frame_producer::empty())
@@ -84,25 +91,19 @@ public:
 		{
 			background_->leading_producer(foreground_);
 
-			background_->unsubscribe(background_event_subject_);
-			foreground_->unsubscribe(foreground_event_subject_);
-
-			foreground_ = std::move(background_);
+			set_foreground(background_);
 			background_ = std::move(frame_producer::empty());
-			
-			foreground_->subscribe(foreground_event_subject_);
 
 			auto_play_delta_.reset();
 		}
 
 		foreground_->paused(false);
+		is_paused_ = false;
 	}
 	
 	void stop()
 	{
-		foreground_->unsubscribe(foreground_event_subject_);
-
-		foreground_ = std::move(frame_producer::empty());
+		set_foreground(frame_producer::empty());
 
 		auto_play_delta_.reset();
 	}
@@ -111,6 +112,8 @@ public:
 	{		
 		try
 		{		
+			*monitor_subject_ << monitor::message("/paused") % is_paused_;
+
 			auto frame = foreground_->receive();
 			
 			if(frame == core::draw_frame::late())
@@ -126,13 +129,13 @@ public:
 				}
 			}
 
-			event_subject_	<< monitor::event("time")	% monitor::duration(foreground_->frame_number()/format_desc.fps)
-														% monitor::duration(static_cast<int64_t>(foreground_->nb_frames()) - static_cast<int64_t>(auto_play_delta_ ? *auto_play_delta_ : 0)/format_desc.fps)
-							<< monitor::event("frame")	% static_cast<int64_t>(foreground_->frame_number())
-														% static_cast<int64_t>((static_cast<int64_t>(foreground_->nb_frames()) - static_cast<int64_t>(auto_play_delta_ ? *auto_play_delta_ : 0)));
+			//event_subject_	<< monitor::event("time")	% monitor::duration(foreground_->frame_number()/format_desc.fps)
+			//											% monitor::duration(static_cast<int64_t>(foreground_->nb_frames()) - static_cast<int64_t>(auto_play_delta_ ? *auto_play_delta_ : 0)/format_desc.fps)
+			//				<< monitor::event("frame")	% static_cast<int64_t>(foreground_->frame_number())
+			//											% static_cast<int64_t>((static_cast<int64_t>(foreground_->nb_frames()) - static_cast<int64_t>(auto_play_delta_ ? *auto_play_delta_ : 0)));
 
-			foreground_event_subject_ << monitor::event("type") % foreground_->name();
-			background_event_subject_ << monitor::event("type") % background_->name();
+			//foreground_event_subject_ << monitor::event("type") % foreground_->name();
+			//background_event_subject_ << monitor::event("type") % background_->name();
 				
 			return frame;
 		}
@@ -158,6 +161,16 @@ public:
 		info.add_child(L"background.producer", background_->info());
 		return info;
 	}
+
+	void on_interaction(const interaction_event::ptr& event)
+	{
+		foreground_->on_interaction(event);
+	}
+	
+	bool collides(double x, double y) const
+	{
+		return foreground_->collides(x, y);
+	}
 };
 
 layer::layer(int index) : impl_(new impl(index)){}
@@ -179,6 +192,7 @@ draw_frame layer::receive(const video_format_desc& format_desc) {return impl_->r
 spl::shared_ptr<frame_producer> layer::foreground() const { return impl_->foreground_;}
 spl::shared_ptr<frame_producer> layer::background() const { return impl_->background_;}
 boost::property_tree::wptree layer::info() const{return impl_->info();}
-void layer::subscribe(const monitor::observable::observer_ptr& o) {impl_->event_subject_.subscribe(o);}
-void layer::unsubscribe(const monitor::observable::observer_ptr& o) {impl_->event_subject_.unsubscribe(o);}
+monitor::subject& layer::monitor_output() {return *impl_->monitor_subject_;}
+void layer::on_interaction(const interaction_event::ptr& event) { impl_->on_interaction(event); }
+bool layer::collides(double x, double y) const { return impl_->collides(x, y); }
 }}

@@ -19,7 +19,7 @@
 * Author: Robert Nagy, ronag89@gmail.com
 */
 
-#include "../../stdafx.h"
+#include "../../StdAfx.h"
 
 #include "buffer.h"
 
@@ -28,8 +28,9 @@
 
 #include <common/except.h>
 #include <common/gl/gl_check.h>
+#include <common/timer.h>
 
-#include <gl/glew.h>
+#include <GL/glew.h>
 
 #include <tbb/atomic.h>
 
@@ -52,14 +53,17 @@ public:
 		, target_(usage == buffer::usage::write_only ? GL_PIXEL_UNPACK_BUFFER : GL_PIXEL_PACK_BUFFER)
 		, usage_(usage == buffer::usage::write_only ? GL_STREAM_DRAW : GL_STREAM_READ)
 	{
-		boost::timer timer;
+		caspar::timer timer;
 
 		data_ = nullptr;
 		GL(glGenBuffers(1, &pbo_));
 		bind();	
 		GL(glBufferData(target_, size_, NULL, usage_));		
-		if(usage_ == GL_STREAM_DRAW)	
-			data_ = (uint8_t*)GL2(glMapBuffer(target_, usage_ == GL_STREAM_DRAW ? GL_WRITE_ONLY : GL_READ_ONLY));  
+		if(usage_ == GL_STREAM_DRAW)
+		{
+			auto result = GL2(glMapBuffer(target_, usage_ == GL_STREAM_DRAW ? GL_WRITE_ONLY : GL_READ_ONLY));
+			data_ = reinterpret_cast<uint8_t*>(result);
+		}
 		unbind();
 
 		if(!pbo_)
@@ -81,13 +85,14 @@ public:
 		if(data_ != nullptr)
 			return data_;
 		
-		boost::timer timer;
+		caspar::timer timer;
 
 		GL(glBindBuffer(target_, pbo_));
 		if(usage_ == GL_STREAM_DRAW)			
 			GL(glBufferData(target_, size_, NULL, usage_));	// Notify OpenGL that we don't care about previous data.
 		
-		data_ = (uint8_t*)GL2(glMapBuffer(target_, usage_ == GL_STREAM_DRAW ? GL_WRITE_ONLY : GL_READ_ONLY));  
+		auto result = GL2(glMapBuffer(target_, usage_ == GL_STREAM_DRAW ? GL_WRITE_ONLY : GL_READ_ONLY));
+		data_ = (uint8_t*) result;
 
 		if(timer.elapsed() > 0.02)
 			CASPAR_LOG(debug) << L"[buffer] Performance warning. Buffer mapping blocked: " << timer.elapsed();

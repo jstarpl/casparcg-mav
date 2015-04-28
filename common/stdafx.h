@@ -21,4 +21,6 @@
 
 #pragma once
 
+#ifdef WIN32
 #include "os/windows/windows.h"
+#endif

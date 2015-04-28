@@ -28,9 +28,22 @@
 #include <core/frame/pixel_format.h>
 #include <core/mixer/audio/audio_mixer.h>
 
+#include <boost/rational.hpp>
+
 #include <array>
 
-enum PixelFormat;
+#if defined(_MSC_VER)
+#pragma warning (push)
+#pragma warning (disable : 4244)
+#endif
+extern "C"
+{
+#include <libavutil/avutil.h>
+}
+#if defined(_MSC_VER)
+#pragma warning (pop)
+#endif
+
 struct AVFrame;
 struct AVFormatContext;
 struct AVPacket;
@@ -56,7 +69,7 @@ core::pixel_format_desc				pixel_format_desc(PixelFormat pix_fmt, int width, int
 spl::shared_ptr<AVPacket> create_packet();
 spl::shared_ptr<AVFrame>  create_frame();
 
-spl::shared_ptr<AVCodecContext> open_codec(AVFormatContext& context,  enum AVMediaType type, int& index);
+spl::shared_ptr<AVCodecContext> open_codec(AVFormatContext& context, AVMediaType type, int& index);
 spl::shared_ptr<AVFormatContext> open_input(const std::wstring& filename);
 
 bool is_sane_fps(AVRational time_base);
@@ -66,7 +79,8 @@ double read_fps(AVFormatContext& context, double fail_value);
 
 std::wstring print_mode(int width, int height, double fps, bool interlaced);
 
-std::wstring probe_stem(const std::wstring stem);
-bool is_valid_file(const std::wstring filename);
+std::wstring probe_stem(const std::wstring& stem);
+bool is_valid_file(const std::wstring& filename);
+bool try_get_duration(const std::wstring filename, std::int64_t& duration, boost::rational<std::int64_t>& time_base);
 
 }}

@@ -24,6 +24,7 @@
 #include "frame_producer.h"
 
 #include "../monitor/monitor.h"
+#include "../interaction/interaction_sink.h"
 
 #include <common/forward.h>
 #include <common/future_fwd.h>
@@ -37,7 +38,7 @@ FORWARD1(boost, template<typename T> class optional);
 
 namespace caspar { namespace core {
 	
-class layer sealed : public monitor::observable
+class layer final : public interaction_sink
 {
 	layer(const layer&);
 	layer& operator=(const layer&);
@@ -64,8 +65,12 @@ public:
 	
 	// monitor::observable
 
-	void subscribe(const monitor::observable::observer_ptr& o) override;
-	void unsubscribe(const monitor::observable::observer_ptr& o) override;
+	monitor::subject& monitor_output();
+
+	// interaction_sink
+
+	void on_interaction(const interaction_event::ptr& event) override;
+	bool collides(double x, double y) const override;
 
 	// Properties
 		

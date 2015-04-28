@@ -21,12 +21,13 @@
 
 #pragma once
 
+#ifdef __cplusplus
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 
 #include "../common/compiler/vs/disable_silly_warnings.h"
 
-#ifdef _DEBUG
+#if defined _DEBUG && defined _MSC_VER
 #include <crtdbg.h>
 #endif
 
@@ -44,9 +45,7 @@
 #include <tbb/atomic.h>
 #include <tbb/concurrent_queue.h>
 
-#include <boost/assign.hpp>
 #include <boost/filesystem.hpp>
-#include <boost/foreach.hpp>
 #include <boost/range/algorithm.hpp>
 #include <boost/format.hpp>
 #include <boost/algorithm/string.hpp>
@@ -59,3 +58,6 @@
 
 #include "../common/log.h"
 #include "../common/except.h"
+#endif
+#include <rpc.h>
+#include <rpcndr.h>
