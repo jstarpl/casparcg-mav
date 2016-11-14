@@ -24,37 +24,38 @@
 
 #include "replay_consumer.h"
 
-#include <common/concurrency/executor.h>
-#include <common/exception/exceptions.h>
-#include <common/env.h>
-#include <common/log/log.h>
-#include <common/utility/string.h>
-#include <common/concurrency/future_util.h>
-#include <common/diagnostics/graph.h>
-#include <boost/timer.hpp>
-#include <boost/date_time/posix_time/posix_time.hpp>
-
-#include <core/parameters/parameters.h>
-#include <core/consumer/frame_consumer.h>
-#include <core/video_format.h>
-#include <core/mixer/read_frame.h>
-
-#include <boost/thread.hpp>
-#include <boost/thread/locks.hpp>
-
-#include <tbb/concurrent_queue.h>
-
 #include "../util/frame_operations.h"
 #include "../util/file_operations.h"
 
-#include <FreeImage.h>
-#include <setjmp.h>
-#include <vector>
-
-#include <Windows.h>
+#ifndef CASPAR_2_1
+#include <common/concurrency/executor.h>
+#include <common/env.h>
+#include <common/concurrency/future_util.h>
+#include <common/diagnostics/graph.h>
+#include <core/parameters/parameters.h>
+#include <core/consumer/frame_consumer.h>
+#include <core/mixer/read_frame.h>
+#include <boost/algorithm/string.hpp>
+#else
+#include <core/frame/frame.h>
+#include <common/executor.h>
+#include <common/env.h>
+#include <common/future.h>
+#include <common/diagnostics/graph.h>
+#include <common/param.h>
+#include <core/consumer/frame_consumer.h>
+#include <core/video_format.h>
+#include <core/mixer/mixer.h>
+#include <core/help/help_sink.h>
+#include <core/help/help_repository.h>
+#include <boost/thread.hpp>
+#include <boost/thread/locks.hpp>
+#include <tbb/concurrent_queue.h>
+#endif
+#include <boost/timer.hpp>
 
 namespace caspar { namespace replay {
-	
+
 struct replay_consumer : public core::frame_consumer
 {
 	core::monitor::subject					monitor_subject_;
@@ -69,14 +70,21 @@ struct replay_consumer : public core::frame_consumer
 	mjpeg_file_handle						output_index_file_;
 	bool									file_open_;
 	executor								encode_executor_;
+#ifndef CASPAR_2_1
 	const safe_ptr<diagnostics::graph>		graph_;
+#else
+	spl::shared_ptr<diagnostics::graph>		graph_;
+#endif
 	mjpeg_process_mode						mode_;
 	boost::posix_time::ptime				start_timecode_;
 
 	int										audio_channels_;
 
+#ifndef CASPAR_2_1
 	tbb::atomic<int64_t>					current_encoding_delay_;
-
+#else
+	int64_t							current_encoding_delay_;
+#endif
 
 #define REPLAY_FRAME_BUFFER					32
 #define REPLAY_JPEG_QUALITY					90
@@ -108,22 +116,26 @@ public:
 		file_open_ = false;
 	}
 
+#ifndef CASPAR_2_1
 	virtual void initialize(const core::video_format_desc& format_desc, const core::channel_layout& audio_channel_layout, int)
+#else
+	virtual void initialize(const core::video_format_desc& format_desc, const core::audio_channel_layout& audio_channel_layout, int)
+#endif
 	{
 		format_desc_ = format_desc;
 
-		output_file_ = safe_fopen((env::media_folder() + filename_ + L".MAV").c_str(), GENERIC_WRITE, FILE_SHARE_READ);
+		output_file_ = safe_fopen((env::media_folder() + filename_ + L".mav").c_str(), GENERIC_WRITE, FILE_SHARE_READ);
 		if (output_file_ == NULL)
 		{
-			CASPAR_LOG(error) << print() <<  L" Can't open file " << filename_ << L".MAV for writing";
+			CASPAR_LOG(error) << print() << L" Can't open file " << filename_ << L".mav for writing";
 			return;
 		}
 		else
 		{
-			output_index_file_ = safe_fopen((env::media_folder() + filename_ + L".IDX").c_str(), GENERIC_WRITE, FILE_SHARE_READ);
+			output_index_file_ = safe_fopen((env::media_folder() + filename_ + L".idx").c_str(), GENERIC_WRITE, FILE_SHARE_READ);
 			if (output_index_file_ == NULL)
 			{
-				CASPAR_LOG(error) << print() <<  L" Can't open index file " << filename_ << L".IDX for writing";
+				CASPAR_LOG(error) << print() << L" Can't open index file " << filename_ << L".idx for writing";
 				safe_fclose(output_file_);
 				return;
 			}
@@ -152,32 +164,36 @@ public:
 	}
 
 #pragma warning(disable: 4701)
+#ifndef CASPAR_2_1
 	void encode_video_frame(core::read_frame& frame)
+#else
+	void encode_video_frame(core::const_frame frame)
+#endif
 	{
 		auto format_desc = format_desc_;
 		auto out_file = output_file_;
 		auto idx_file = output_index_file_;
 		auto quality = quality_;
 		auto subsampling = subsampling_;
-		
+
 		long long written = 0;
 
 		switch (mode_)
 		{
 		case PROGRESSIVE:
-			written = write_frame(out_file, format_desc.width, format_desc.height, frame.image_data().begin(), quality, PROGRESSIVE, subsampling, frame.audio_data().begin(), frame.audio_data().size()*4);
+			written = write_frame(out_file, format_desc.width, format_desc.height, frame.image_data().begin(), quality, PROGRESSIVE, subsampling, frame.audio_data().begin(), (uint32_t)frame.audio_data().size()*4);
 			write_index(idx_file, written);
 			break;
 		case UPPER:
-			written = write_frame(out_file, format_desc.width, format_desc.height / 2, frame.image_data().begin(), quality, UPPER, subsampling, frame.audio_data().begin(), frame.audio_data().size()*2);
+			written = write_frame(out_file, format_desc.width, format_desc.height / 2, frame.image_data().begin(), quality, UPPER, subsampling, frame.audio_data().begin(), (uint32_t)frame.audio_data().size()*2);
 			write_index(idx_file, written);
-			written = write_frame(out_file, format_desc.width, format_desc.height / 2, frame.image_data().begin(), quality, LOWER, subsampling, frame.audio_data().begin() + frame.audio_data().size()/2, frame.audio_data().size()*2);
+			written = write_frame(out_file, format_desc.width, format_desc.height / 2, frame.image_data().begin(), quality, LOWER, subsampling, frame.audio_data().begin() + (uint32_t)frame.audio_data().size()/2, (uint32_t)frame.audio_data().size()*2);
 			write_index(idx_file, written);
 			break;
 		case LOWER:
-			written = write_frame(out_file, format_desc.width, format_desc.height / 2, frame.image_data().begin(), quality, LOWER, subsampling, frame.audio_data().begin(), frame.audio_data().size()*2);
+			written = write_frame(out_file, format_desc.width, format_desc.height / 2, frame.image_data().begin(), quality, LOWER, subsampling, frame.audio_data().begin(), (uint32_t)frame.audio_data().size()*2);
 			write_index(idx_file, written);
-			written = write_frame(out_file, format_desc.width, format_desc.height / 2, frame.image_data().begin(), quality, UPPER, subsampling, frame.audio_data().begin() + frame.audio_data().size()/2, frame.audio_data().size()*2);
+			written = write_frame(out_file, format_desc.width, format_desc.height / 2, frame.image_data().begin(), quality, UPPER, subsampling, frame.audio_data().begin() + (uint32_t)frame.audio_data().size()/2, (uint32_t)frame.audio_data().size()*2);
 			write_index(idx_file, written);
 			break;
 		}
@@ -193,32 +209,48 @@ public:
 
 	void mark_dropped()
 	{
+#ifndef CASPAR_2_1
 		graph_->set_tag("dropped-frame");
+#else
+		graph_->set_tag(caspar::diagnostics::tag_severity::WARNING, "dropped-frame");
+#endif
 	}
 
+#ifndef CASPAR_2_1
 	virtual boost::unique_future<bool> send(const safe_ptr<core::read_frame>& frame) override
-	{				
+#else
+	std::future<bool> send(core::const_frame frame) override
+#endif
+	{
 		if (file_open_)
 		{
 			if (ready_for_frame())
 			{
 				encode_executor_.begin_invoke([=]
-				{		
+				{
 					boost::timer frame_timer;
 
+#ifndef CASPAR_2_1
 					encode_video_frame(*frame);
-			
+#else
+					encode_video_frame(frame);
+#endif
+
 					graph_->set_text(print());
 					graph_->set_value("frame-time", frame_timer.elapsed()*0.5*format_desc_.fps);
 
+#ifndef CASPAR_2_1
 					current_encoding_delay_ = frame->get_age_millis();
+#else
+					current_encoding_delay_ = frame.get_age_millis();
+#endif
 
-					monitor_subject_	<< core::monitor::message("/profiler/time")		% frame_timer.elapsed() % (1.0/format_desc_.fps);			
-								
-					monitor_subject_	<< core::monitor::message("/file/time")			% (framenum_ / format_desc_.fps) 
-										<< core::monitor::message("/file/frame")		% static_cast<int32_t>(framenum_)
-										<< core::monitor::message("/file/fps")			% format_desc_.fps
-										<< core::monitor::message("/file/path")			% filename_;
+					monitor_subject_ << core::monitor::message("/profiler/time") % frame_timer.elapsed() % (1.0 / format_desc_.fps);
+
+					monitor_subject_ << core::monitor::message("/file/time") % (framenum_ / format_desc_.fps)
+						<< core::monitor::message("/file/frame") % static_cast<int32_t>(framenum_)
+						<< core::monitor::message("/file/fps") % format_desc_.fps
+						<< core::monitor::message("/file/path") % filename_;
 				});
 			}
 			else
@@ -229,7 +261,11 @@ public:
 			graph_->set_value("buffered-video", (double)encode_executor_.size() / (double)encode_executor_.capacity());
 		}
 
+#ifndef CASPAR_2_1
 		return wrap_as_future(true);
+#else
+		return make_ready_future(true);
+#endif
 	}
 
 	virtual int64_t presentation_frame_age_millis() const override
@@ -283,59 +319,86 @@ public:
 		if (output_index_file_ != NULL)
 			safe_fclose(output_index_file_);
 
-		CASPAR_LOG(info) << print() << L" Successfully Uninitialized.";	
+		CASPAR_LOG(info) << print() << L" Successfully Uninitialized.";
 	}
+
+#ifdef CASPAR_2_1
+	std::wstring name() const override
+	{
+		return L"replay";
+	}
+#endif
 };
 
-safe_ptr<core::frame_consumer> create_consumer(const core::parameters& params)
+#ifdef CASPAR_2_1
+void describe_consumer(core::help_sink & sink, const core::help_repository & repo)
 {
-	if(params.size() < 1 || params[0] != L"REPLAY")
+	CASPAR_LOG(error) << L" describe_consumer ";
+
+	sink.short_description(L"Writes replay file.");
+	sink.syntax(L"REPLAY ");
+	sink.para()->text(L"Writes replay file.");
+}
+#endif
+
+#ifndef CASPAR_2_1
+safe_ptr<core::frame_consumer> create_consumer(const core::parameters& params)
+#else
+spl::shared_ptr<core::frame_consumer> create_consumer(
+	const std::vector<std::wstring>& params, core::interaction_sink*)
+#endif
+{
+	if (params.size() < 1 || !boost::iequals(params[0], L"REPLAY"))
 		return core::frame_consumer::empty();
 
 	std::wstring filename = L"REPLAY";
 
 	short quality = REPLAY_JPEG_QUALITY;
 	chroma_subsampling subsampling = REPLAY_JPEG_SUBSAMPLING;
-	
+
 
 	if (params.size() > 1)
 	{
 		filename = params[1];
 
-		for (uint16_t i=2; i<params.size(); i++)
+		for (uint16_t i = 2; i<params.size(); i++)
 		{
-			if (params[i] == L"SUBSAMPLING")
+			if (boost::iequals(params[i], L"SUBSAMPLING"))
 			{
-				if (params[i+1] == L"444")
+				if (params[i + 1] == L"444")
 				{
 					subsampling = Y444;
 					i++;
 				}
-				else if (params[i+1] == L"422")
+				else if (params[i + 1] == L"422")
 				{
 					subsampling = Y422;
 					i++;
 				}
-				else if (params[i+1] == L"420")
+				else if (params[i + 1] == L"420")
 				{
 					subsampling = Y420;
 					i++;
 				}
-				else if (params[i+1] == L"411")
+				else if (params[i + 1] == L"411")
 				{
 					subsampling = Y411;
 					i++;
 				}
 			}
-			else if (params[i] == L"QUALITY")
+			else if (boost::iequals(params[i], L"QUALITY"))
 			{
-				quality = boost::lexical_cast<short>(params[i+1]);
+				quality = boost::lexical_cast<short>(params[i + 1]);
 				i++;
 			}
 		}
 	}
 
+#ifndef CASPAR_2_1
 	return make_safe<replay_consumer>(filename, quality, subsampling, 2);
+#else
+	return spl::make_shared<replay_consumer>(filename, quality, subsampling, 2);
+#endif
 }
 
 }}

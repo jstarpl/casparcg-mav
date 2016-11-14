@@ -18,25 +18,26 @@
 * along with CasparCG. If not, see <http://www.gnu.org/licenses/>.
 *
 * Author: Jan Starzak, jan@ministryofgoodsteps.com
+*		  Krzysztof Pyrkosz, pyrkosz@o2.pl
 */
 
 #include "frame_operations.h"
 
-#include <stdint.h>
 #include <memory>
 #include <tmmintrin.h>
-
 #include <tbb/parallel_for.h>
 
 #define OPTIMIZE_RGB_TO_BGRA
 #define OPTIMIZE_BGRA_TO_RGB
+//#define REPLAY_USE_ASM
+//#define OPTIMIZE_BLEND_IMAGES
 
 namespace caspar { namespace replay {
 
 #pragma warning(disable:4309)
 	void bgra_to_rgb(const mmx_uint8_t* src, mmx_uint8_t* dst, int line_width)
 	{
-#ifndef OPTIMIZE_BGRA_TO_RGB
+#if !defined(OPTIMIZE_BGRA_TO_RGB)
 		tbb::parallel_for(tbb::blocked_range<int>(0, line_width), [=](const tbb::blocked_range<int>& r) {
 			for (int i = r.begin(); i != r.end(); i++) {
 				*(dst + i * 3) = *(src + i * 4 + 2);
@@ -44,6 +45,34 @@ namespace caspar { namespace replay {
 				*(dst + i * 3 + 2) = *(src + i * 4);
 			}
 		});
+#elif defined(OPTIMIZE_BGRA_TO_RGB) && !defined(REPLAY_USE_ASM)
+		// bgrabgra bgrabgra => rgbrgbrg brgb     |
+		// bgrabgra bgrabgra =>              rgbr | gbrgbrgb XXXXXXXX
+
+		__m128i mask1 = _mm_set_epi8(0x80, 0x80, 0x80, 0x80,   12,   13,   14,    8,  9, 10,  4, 5, 6,  0, 1, 2);
+		__m128i mask2 = _mm_set_epi8(   6,    0,    1,    2, 0x80, 0x80, 0x80, 0x80, 12, 13, 14, 8, 9, 10, 4, 5);
+		__m128i mask3 = _mm_set_epi8(0xFF, 0xFF, 0xFF, 0xFF,    0,    0,    0,    0,  0,  0,  0, 0, 0,  0, 0, 0);
+		__m128i src1, src2, tmp;
+
+		const __m128i* in_vec = (__m128i*)src;
+		__m64* out_vec = (__m64*)dst;
+
+		line_width /= 32;
+
+		while (line_width-- > 0)
+		{
+			src1 = in_vec[0];
+			src1 = _mm_shuffle_epi8(src1, mask1);
+			src2 = in_vec[1];
+			src2 = _mm_shuffle_epi8(src2, mask2);
+			tmp = _mm_and_si128(src2, mask3);
+			src1 = _mm_or_si128(src1, tmp);
+			_mm_storeu_si128((__m128i*)&out_vec[0], src1);
+			_mm_storel_epi64((__m128i*)&out_vec[2], src2);
+
+			in_vec += 2;
+			out_vec +=3;
+		}
 #else
 		int8_t mask[16] = {2,1,0,6,5,4,10,9,8,14,13,12,0xFF,0xFF,0xFF,0xFF};//{0xFF, 0xFF, 0xFF, 0xFF, 13, 14, 15, 9, 10, 11, 5, 6, 7, 1, 2, 3};
 
@@ -133,10 +162,10 @@ l1:
 	}
 #pragma warning(default:4309)
 
-	void split_frame_to_fields(const mmx_uint8_t* src, mmx_uint8_t* dst1, mmx_uint8_t* dst2, size_t width, size_t height, size_t stride)
+	void split_frame_to_fields(const mmx_uint8_t* src, mmx_uint8_t* dst1, mmx_uint8_t* dst2, uint32_t width, uint32_t height, uint32_t stride)
 	{
-		size_t full_row = width * stride;
-		tbb::parallel_for(tbb::blocked_range<size_t>(0, height/2), [=](const tbb::blocked_range<size_t>& r)
+		uint32_t full_row = width * stride;
+		tbb::parallel_for(tbb::blocked_range<uint32_t>(0, height/2), [=](const tbb::blocked_range<uint32_t>& r)
 		{
 			for (auto i = r.begin(); i != r.end(); ++i)
 			{
@@ -146,10 +175,10 @@ l1:
 		});
 	}
 
-	void interlace_fields(const mmx_uint8_t* src1, const mmx_uint8_t* src2, mmx_uint8_t* dst, size_t width, size_t height, size_t stride)
+	void interlace_fields(const mmx_uint8_t* src1, const mmx_uint8_t* src2, mmx_uint8_t* dst, uint32_t width, uint32_t height, uint32_t stride)
 	{
-		size_t full_row = width * stride;
-		tbb::parallel_for(tbb::blocked_range<size_t>(0, height/2), [=](const tbb::blocked_range<size_t>& r)
+		uint32_t full_row = width * stride;
+		tbb::parallel_for(tbb::blocked_range<uint32_t>(0, height/2), [=](const tbb::blocked_range<uint32_t>& r)
 		{
 			for (auto i = r.begin(); i != r.end(); ++i)
 			{
@@ -159,10 +188,10 @@ l1:
 		});
 	}
 
-	void interlace_frames(const mmx_uint8_t* src1, const mmx_uint8_t* src2, mmx_uint8_t* dst, size_t width, size_t height, size_t stride)
+	void interlace_frames(const mmx_uint8_t* src1, const mmx_uint8_t* src2, mmx_uint8_t* dst, uint32_t width, uint32_t height, uint32_t stride)
 	{
-		size_t full_row = width * stride;
-		tbb::parallel_for(tbb::blocked_range<size_t>(0, height/2), [=](const tbb::blocked_range<size_t>& r)
+		uint32_t full_row = width * stride;
+		tbb::parallel_for(tbb::blocked_range<uint32_t>(0, height/2), [=](const tbb::blocked_range<uint32_t>& r)
 		{
 			for (auto i = r.begin(); i != r.end(); ++i)
 			{
@@ -172,10 +201,10 @@ l1:
 		});
 	}
 	
-	void field_double(const mmx_uint8_t* src, mmx_uint8_t* dst, size_t width, size_t height, size_t stride)
+	void field_double(const mmx_uint8_t* src, mmx_uint8_t* dst, uint32_t width, uint32_t height, uint32_t stride)
 	{
-		size_t full_row = width * stride;
-		/* tbb::parallel_for(tbb::blocked_range<size_t>(0, height/2), [=](const tbb::blocked_range<size_t>& r)
+		uint32_t full_row = width * stride;
+		/* tbb::parallel_for(tbb::blocked_range<uint32_t>(0, height/2), [=](const tbb::blocked_range<uint32_t>& r)
 		{
 			for (auto i = r.begin(); i != r.end(); ++i)
 			{
@@ -183,7 +212,7 @@ l1:
 				memcpy((dst + (i * 2 + 1) * full_row), (src + i  * full_row), full_row);
 			}
 		}); */
-		tbb::parallel_for(tbb::blocked_range<size_t>(0, height/2 - 1), [=](const tbb::blocked_range<size_t>& r)
+		tbb::parallel_for(tbb::blocked_range<uint32_t>(0, height/2 - 1), [=](const tbb::blocked_range<uint32_t>& r)
 		{
 			for (auto i = r.begin(); i != r.end(); ++i)
 			{
@@ -199,23 +228,80 @@ l1:
 #pragma warning(disable:4309 4244)
 	// max level is 63
 	// level = 63 means 100% src1, level = 0 means 100% src2
-	void blend_images(const mmx_uint8_t* src1, mmx_uint8_t* src2, mmx_uint8_t* dst, size_t width, size_t height, size_t stride, uint8_t level)
+	void blend_images(const mmx_uint8_t* src1, mmx_uint8_t* src2, mmx_uint8_t* dst, uint32_t width, uint32_t height, uint32_t stride, uint8_t level)
 	{
 		uint32_t full_size = width * height * stride;
 		uint16_t level_16 = (uint16_t)level;
-		tbb::parallel_for(tbb::blocked_range<size_t>(0, full_size), [=](const tbb::blocked_range<size_t>& r)
+#ifndef OPTIMIZE_BLEND_IMAGES
+		tbb::parallel_for(tbb::blocked_range<uint32_t>(0, full_size), [=](const tbb::blocked_range<uint32_t>& r)
 		{
 			for (auto i = r.begin(); i != r.end(); i++)
 			{
 				dst[i] = (uint8_t)((((int)src1[i] * level_16) >> 6) + (((int)src2[i] * (64 - level_16)) >> 6));
 			}
 		});
+#else
+		const __m64* in1_vec = (__m64*)src1;
+		const __m64* in2_vec = (__m64*)src2;
+		__m64* out_vec = (__m64*)dst;
+		__m128i mul = _mm_set_epi16(level_16, level_16, level_16, level_16, level_16, level_16, level_16, level_16);
+		__m128i in1, in2;
+		__m128i mask = _mm_set_epi8(0x80, 7, 0x80, 6, 0x80, 5, 0x80, 4, 0x80, 3, 0x80, 2, 0x80, 1, 0x80, 0);
+		__m128i umask = _mm_set_epi8(0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 14, 12, 10, 8, 6, 4, 2, 0);
+
+		full_size /= 24;
+		while (full_size-- > 0)
+		{
+			/*             01 23 45 67 89 AB CD EF
+			 * in_vec[0]   Ra Ga Ba Rb Gb Bb Rc Gc     
+			 * in_vec[1]   Bc Rd Gd Bd Re Ge Be Rf 
+			 * in_vec[2]   Gg Bg Rh Gh Bh Ri Gi Bi
+			 */
+
+			in1 = _mm_loadl_epi64((__m128i*)&in1_vec[0]);
+			in2 = _mm_loadl_epi64((__m128i*)&in2_vec[0]);
+			in1 = _mm_shuffle_epi8(in1, mask);
+			in2 = _mm_shuffle_epi8(in2, mask);
+			in1 = _mm_sub_epi16(in1, in2);
+			in1 = _mm_mullo_epi16 (in1, mul);
+			in1 = _mm_srli_epi16(in1, 6);
+			in1 = _mm_add_epi16(in1, in2);
+			in1 = _mm_shuffle_epi8(in1, umask);
+			_mm_storel_epi64((__m128i*)&out_vec[0], in1);
+
+			in1 = _mm_loadl_epi64((__m128i*)&in1_vec[1]);
+			in2 = _mm_loadl_epi64((__m128i*)&in2_vec[1]);
+			in1 = _mm_shuffle_epi8(in1, mask);
+			in2 = _mm_shuffle_epi8(in2, mask);
+			in1 = _mm_sub_epi16(in1, in2);
+			in1 = _mm_mullo_epi16 (in1, mul);
+			in1 = _mm_srli_epi16(in1, 6);
+			in1 = _mm_add_epi16(in1, in2);
+			in1 = _mm_shuffle_epi8(in1, umask);
+			_mm_storel_epi64((__m128i*)&out_vec[1], in1);
+
+			in1 = _mm_loadl_epi64((__m128i*)&in1_vec[2]);
+			in2 = _mm_loadl_epi64((__m128i*)&in2_vec[2]);
+			in1 = _mm_shuffle_epi8(in1, mask);
+			in2 = _mm_shuffle_epi8(in2, mask);
+			in1 = _mm_sub_epi16(in1, in2);
+			in1 = _mm_mullo_epi16 (in1, mul);
+			in1 = _mm_srli_epi16(in1, 6);
+			in1 = _mm_add_epi16(in1, in2);
+			in1 = _mm_shuffle_epi8(in1, umask);
+			_mm_storel_epi64((__m128i*)&out_vec[2], in1);
+
+			in1_vec += 3;
+			in2_vec += 3;
+			out_vec += 3;
+		}
+#endif
 	}
 
-	void black_frame(mmx_uint8_t* dst, size_t width, size_t height, size_t stride)
+	void black_frame(mmx_uint8_t* dst, uint32_t width, uint32_t height, uint32_t stride)
 	{
 		uint32_t full_size = width * height;
-		tbb::parallel_for(tbb::blocked_range<size_t>(0, full_size), [=](const tbb::blocked_range<size_t>& r)
+		tbb::parallel_for(tbb::blocked_range<uint32_t>(0, full_size), [=](const tbb::blocked_range<uint32_t>& r)
 		{
 			for (auto i = r.begin(); i != r.end(); i++)
 			{
