@@ -106,11 +106,16 @@ namespace caspar { namespace replay {
 
 	void safe_fclose(mjpeg_file_handle file_handle)
 	{
+		try {
 #ifdef REPLAY_IO_WINAPI
-		CloseHandle(file_handle);
+			CloseHandle(file_handle);
 #else
-		fclose(file_handle);
+			fclose(file_handle);
 #endif;
+		} catch (...) {
+			printf("Error while closing file.");
+			return;
+		}
 	}
 
 	void write_index_header(mjpeg_file_handle outfile_idx, const core::video_format_desc* format_desc, boost::posix_time::ptime start_timecode, int audio_channels)
@@ -537,7 +542,7 @@ namespace caspar { namespace replay {
 		if (audioBufSize > 0)
 		{
 			read = 0;
-			(*audio) = new int32_t[audioBufSize/4];
+			(*audio) = new int32_t[audioBufSize/sizeof(int32_t)];
 #ifdef REPLAY_IO_WINAPI
 			ReadFile(infile, *audio, (DWORD)audioBufSize, (DWORD*)&read, FALSE);
 #else
